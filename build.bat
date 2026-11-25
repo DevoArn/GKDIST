@@ -1,0 +1,125 @@
+@echo off
+rem GKDIST - Copyright (C) 2026 Roman Gutekunst (GK)
+rem SPDX-License-Identifier: GPL-3.0-or-later
+rem ---------------------------------------------------------------------------
+rem  GKDIST build script
+rem  Needs Visual Studio 2019 or 2022 (any edition, or the Build Tools) with the
+rem  "Desktop development with C++" workload; uses its bundled CMake + Ninja.
+rem  Python 3 is needed for "build.bat installer" only.
+rem
+rem    build.bat            Release build of the VST3 + Standalone
+rem    build.bat installer  Release build + Windows installer -> dist\
+rem    build.bat tests      Build and run the DSP test runner
+rem    build.bat hosttest   Load the built VST3 in a test host
+rem    build.bat uitest     In-process UI test: render, interaction, hostile state
+rem    build.bat debug      Debug build of the plugin
+rem ---------------------------------------------------------------------------
+setlocal
+
+rem Locate Visual Studio (newest install with the C++ x64 tools)
+set "VSROOT="
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+    for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+)
+if not defined VSROOT (
+    echo Visual Studio 2019/2022 with the C++ workload was not found.
+    exit /b 1
+)
+set "CMAKEDIR=%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake"
+set "PATH=%CMAKEDIR%\CMake\bin;%CMAKEDIR%\Ninja;%PATH%"
+
+call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" >nul
+if errorlevel 1 (
+    echo Could not initialise the MSVC environment.
+    exit /b 1
+)
+
+set "SRC=%~dp0"
+set "OUT=%SRC%build\GKDIST_artefacts\Release"
+
+rem Fresh clone: fetch JUCE + PFFFT (git submodules)
+if not exist "%SRC%external\JUCE\CMakeLists.txt" git -C "%SRC%." submodule update --init --depth 1 || exit /b 1
+
+rem JUCE 7.0.12 asks for CMake 3.22; VS 2019 ships 3.20, which works fine.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "foreach ($f in @('CMakeLists.txt', 'extras\Build\CMake\JUCEModuleSupport.cmake', 'extras\Build\CMake\JUCEUtils.cmake')) {" ^
+  "  $p = Join-Path '%SRC%external\JUCE' $f; $t = [IO.File]::ReadAllText($p);" ^
+  "  if ($t.Contains('cmake_minimum_required(VERSION 3.22)')) { [IO.File]::WriteAllText($p, $t.Replace('cmake_minimum_required(VERSION 3.22)', 'cmake_minimum_required(VERSION 3.20)')) } }"
+if /I "%1"=="tests" goto tests
+if /I "%1"=="debug" goto debug
+if /I "%1"=="hosttest" goto hosttest
+if /I "%1"=="uitest" goto uitest
+if /I "%1"=="installer" goto installer
+
+:release
+call :build_plugin || exit /b 1
+echo.
+echo VST3 bundle: %OUT%\VST3\GKDIST.vst3
+exit /b 0
+
+:installer
+call :build_plugin || exit /b 1
+python "%SRC%Tools\make_payload.py" "%SRC%build" "%SRC%build\installer\payload.zip" "%SRC%." || exit /b 1
+cmake -S "%SRC%." -B "%SRC%build-installer" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGKD_BUILD_PLUGIN=OFF -DGKD_BUILD_INSTALLER=ON "-DGKD_PAYLOAD=%SRC%build\installer\payload.zip" || exit /b 1
+cmake --build "%SRC%build-installer" --target GKDISTSetup GKDISTSetupTest || exit /b 1
+rem Version from CMakeLists.txt: "project(GKDIST VERSION x.y.z ...)"
+set "VER="
+for /f "tokens=3" %%v in ('findstr /b /c:"project(GKDIST VERSION" "%SRC%CMakeLists.txt"') do set "VER=%%v"
+if not defined VER (
+    echo Could not read the version from CMakeLists.txt
+    exit /b 1
+)
+if not exist "%SRC%dist" mkdir "%SRC%dist"
+copy /Y "%SRC%build-installer\GKDISTSetup_artefacts\Release\GKDIST Setup.exe" "%SRC%dist\GKDIST %VER% Setup.exe" >nul || exit /b 1
+echo.
+echo Installer: %SRC%dist\GKDIST %VER% Setup.exe
+exit /b 0
+
+:debug
+cmake -S "%SRC%." -B "%SRC%build-debug" -G Ninja -DCMAKE_BUILD_TYPE=Debug || exit /b 1
+cmake --build "%SRC%build-debug" --target GKDIST_VST3 GKDIST_Standalone || exit /b 1
+exit /b 0
+
+:hosttest
+call :unlock
+cmake -S "%SRC%." -B "%SRC%build" -G Ninja -DCMAKE_BUILD_TYPE=Release || exit /b 1
+cmake --build "%SRC%build" --target GKDIST_VST3 GKDISTHostTest || exit /b 1
+pushd "%SRC%"
+"%SRC%build\GKDISTHostTest_artefacts\Release\GKDISTHostTest.exe" "build\GKDIST_artefacts\Release\VST3\GKDIST.vst3" "build\editor.png"
+set RES=%errorlevel%
+popd
+exit /b %RES%
+
+:uitest
+cmake -S "%SRC%." -B "%SRC%build" -G Ninja -DCMAKE_BUILD_TYPE=Release || exit /b 1
+cmake --build "%SRC%build" --target GKDISTUITest || exit /b 1
+pushd "%SRC%"
+"%SRC%build\GKDISTUITest_artefacts\Release\GKDISTUITest.exe"
+set RES=%errorlevel%
+popd
+exit /b %RES%
+
+:tests
+cmake -S "%SRC%." -B "%SRC%build-tests" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGKD_BUILD_PLUGIN=OFF || exit /b 1
+cmake --build "%SRC%build-tests" --target GKDISTTests || exit /b 1
+"%SRC%build-tests\GKDISTTests_artefacts\Release\GKDISTTests.exe"
+exit /b %errorlevel%
+
+rem ---------------------------------------------------------------------------
+:build_plugin
+call :unlock
+cmake -S "%SRC%." -B "%SRC%build" -G Ninja -DCMAKE_BUILD_TYPE=Release || exit /b 1
+cmake --build "%SRC%build" --target GKDIST_VST3 GKDIST_Standalone || exit /b 1
+exit /b 0
+
+rem If a host (a DAW) has the built plug-in or the standalone app
+rem loaded, Windows refuses to overwrite it. Such a file can still be renamed:
+rem move it aside so the linker can write the new version.
+:unlock
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "foreach ($f in @('%OUT%\VST3\GKDIST.vst3\Contents\x86_64-win\GKDIST.vst3', '%OUT%\Standalone\GKDIST.exe')) {" ^
+  "  if (Test-Path -LiteralPath $f) { try { [IO.File]::Open($f, 'Open', 'ReadWrite', 'None').Close() } catch {" ^
+  "    $n = (Split-Path $f -Leaf) + '.old-' + (Get-Date -Format yyyyMMddHHmmss); Rename-Item -LiteralPath $f -NewName $n;" ^
+  "    Write-Host ('In use (e.g. by a DAW), moved aside: ' + $n + ' - restart the host to load the new build') } } }"
+exit /b 0
