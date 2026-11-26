@@ -21,10 +21,11 @@ void BandProcessor::prepare (double newHostRate, int newOsFactor, int bandIndex)
     index = bandIndex;
 
     dc.prepare (osRate);
-    phat.prepare (osRate);
+    phat.prepare (osRate, osFactor);   // the sub / warmth core runs at the host rate
     noise[0].prepare (osRate, 0x1234567u + 7919u * (uint32_t) bandIndex);
     noise[1].prepare (osRate, 0x7654321u + 104729u * (uint32_t) bandIndex);
     fx.prepare (osRate, 0x9e3779b9u * (uint32_t) (bandIndex + 1));
+    pd.prepare (osRate);
     comp.prepare (osRate);
     clipper.prepare (osRate);
     det.prepare (hostRate);
@@ -49,6 +50,7 @@ void BandProcessor::reset()
     noise[0].reset();
     noise[1].reset();
     fx.reset();
+    pd.reset();
     comp.reset();
     clipper.reset();
     det.reset();
@@ -93,6 +95,7 @@ void BandProcessor::applyKey (const Key& k)
     dc.reset();
     phat.reset();
     fx.reset();
+    pd.reset();
     comp.reset();
     clipper.reset();
     noiseEnv = 0.0;
@@ -102,6 +105,7 @@ void BandProcessor::applyKey (const Key& k)
     for (auto& v : filterKey) v = -1.0;
     designRegion (true);
     designFilter (true);
+    rPdDepth = tPdDepth; rPdTone = tPdTone;
 }
 
 void BandProcessor::designRegion (bool snap)
@@ -245,7 +249,7 @@ void BandProcessor::update (const BandParams& p, const BandMod& mod, int hostCou
     const double pan     = juce::jlimit (-1.0, 1.0, sPan + mod.pan);
     const double phatAmt = juce::jlimit (0.0, 1.0, sPhat + mod.phat);
     const double noiseDb = juce::jlimit ((double) kNoiseOffDb, 0.0, sNoiseDb + mod.noiseDb);
-    effDriveDb = driveDb; effWet = wet; effGainDb = gainDb;
+    effDriveDb = driveDb; effWet = wet; effGainDb = gainDb; effBias = bias;
 
     const double maxF = std::min (30000.0, 0.49 * osRate);
     eLogF   = juce::jlimit (std::log (10.0), std::log (maxF), sLogF + mod.freqOct * kLn2);
@@ -261,7 +265,7 @@ void BandProcessor::update (const BandParams& p, const BandMod& mod, int hostCou
     designFilter (false);
 
     const auto type = (DistType) key.type;
-    if (p.autoGain && type != DistType::Bitcrush)
+    if (p.autoGain && type != DistType::Bitcrush && type != DistType::PhaseDist)
     {
         if (std::abs (driveDb - autoKey[0]) > 0.01 || std::abs (bias - autoKey[1]) > 1.0e-4 || autoKey[2] != (double) key.type)
         {
@@ -285,6 +289,8 @@ void BandProcessor::update (const BandParams& p, const BandMod& mod, int hostCou
     tPanL  = pan > 0.0 ? 1.0 - pan : 1.0;
     tPanR  = pan < 0.0 ? 1.0 + pan : 1.0;
     crushBitsNow = crushBits (driveDb);
+    tPdDepth = pd.depthForDrive (driveDb);
+    tPdTone = pd.toneCoefficient (bias);
     crushHoldNow = crushHold (bias) * osFactor;
 
     if (keyCompOn)
@@ -303,6 +309,10 @@ BandTelemetry BandProcessor::telemetry() const noexcept
     t.q = (float) std::exp (eLogQ);
     t.levelDb = (float) linToDb (levelEnv);
     t.detDb = (float) detLevelDb;
+    t.bias = (float) effBias;
+    t.filterFreq = (float) std::exp (eLogFF);
+    t.filterRes = (float) std::exp (eLogRes);
+    t.filterGainDb = (float) eFGain;
     return t;
 }
 
@@ -311,7 +321,7 @@ void BandProcessor::process (double* L, double* R, int n, bool stereo, BandScrat
     auto finish = [this]
     {
         rDrive = tDrive; rBias = tBias; rAuto = tAuto; rWet = tWet; rGain = tGain; rPhat = tPhat; rNoise = tNoise;
-        rPanL = tPanL; rPanR = tPanR;
+        rPanL = tPanL; rPanR = tPanR; rPdDepth = tPdDepth; rPdTone = tPdTone;
     };
 
     if (! audible() || n <= 0)
@@ -356,7 +366,11 @@ void BandProcessor::process (double* L, double* R, int n, bool stereo, BandScrat
             case Module::Distortion:
             {
                 const auto type = (DistType) key.type;
-                if (type == DistType::Bitcrush)
+                if (type == DistType::PhaseDist)
+                {
+                    pd.process (x, nch, n, rPdDepth, tPdDepth, rPdTone, tPdTone);
+                }
+                else if (type == DistType::Bitcrush)
                 {
                     const int hold = std::max (1, crushHoldNow);
                     for (int i = 0; i < n; ++i)
@@ -386,12 +400,8 @@ void BandProcessor::process (double* L, double* R, int n, bool stereo, BandScrat
 
             case Module::Phat:
                 if (rPhat > 0.0 || tPhat > 0.0)
-                {
-                    const double dp = (tPhat - rPhat) * inv;
                     for (int c = 0; c < nch; ++c)
-                        for (int i = 0; i < n; ++i)
-                            x[c][i] += (rPhat + dp * (double) (i + 1)) * phat.process (c, x[c][i]);
-                }
+                        phat.processBlock (c, x[c], n, rPhat, tPhat);
                 break;
 
             case Module::Noise:
@@ -400,11 +410,18 @@ void BandProcessor::process (double* L, double* R, int n, bool stereo, BandScrat
                 {
                     const double dn = (tNoise - rNoise) * inv;
                     const double follow = sFollow;
-                    for (int i = 0; i < n; ++i)
+                    if (follow <= 1.0e-6)
                     {
-                        const double pk = std::max (std::abs (b[0][i]), stereo ? std::abs (b[1][i]) : 0.0);
-                        noiseEnv = pk > noiseEnv ? pk : pk + noiseEnvRel * (noiseEnv - pk);
-                        s.n1[i] = (rNoise + dn * (double) (i + 1)) * ((1.0 - follow) + follow * std::min (1.0, 2.0 * noiseEnv));
+                        for (int i = 0; i < n; ++i) s.n1[i] = rNoise + dn * (double) (i + 1);
+                    }
+                    else
+                    {
+                        for (int i = 0; i < n; ++i)
+                        {
+                            const double pk = std::max (std::abs (b[0][i]), stereo ? std::abs (b[1][i]) : 0.0);
+                            noiseEnv = pk > noiseEnv ? pk : pk + noiseEnvRel * (noiseEnv - pk);
+                            s.n1[i] = (rNoise + dn * (double) (i + 1)) * ((1.0 - follow) + follow * std::min (1.0, 2.0 * noiseEnv));
+                        }
                     }
                     const auto nt = (NoiseType) key.ntype;
                     for (int c = 0; c < nch; ++c)

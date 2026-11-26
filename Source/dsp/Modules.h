@@ -253,12 +253,18 @@ private:
 class Phat
 {
 public:
-    void prepare (double sampleRate) noexcept
+    /** decimation: the core (everything after the first low pass, all below
+        ~220 Hz) runs every `decimation` samples and its output is interpolated;
+        the first low pass runs at the full rate and also guards against aliasing. */
+    void prepare (double sampleRate, int decimation = 1) noexcept
     {
         const double pi = 3.14159265358979323846;
-        aDet = 1.0 - std::exp (-2.0 * pi * 220.0 / sampleRate);
-        aSub = 1.0 - std::exp (-2.0 * pi * 90.0 / sampleRate);
-        rel  = std::exp (-1.0 / (0.06 * sampleRate));
+        decim = std::max (1, decimation);
+        const double coreRate = sampleRate / decim;
+        aDetIn = 1.0 - std::exp (-2.0 * pi * 220.0 / sampleRate);
+        aDet = 1.0 - std::exp (-2.0 * pi * 220.0 / coreRate);
+        aSub = 1.0 - std::exp (-2.0 * pi * 90.0 / coreRate);
+        rel  = std::exp (-1.0 / (0.06 * coreRate));
         reset();
     }
 
@@ -269,13 +275,41 @@ public:
             lp1[c] = lp2[c] = env[c] = s1[c] = s2[c] = 0.0;
             state[c] = 1;
             flip[c] = 1.0;
+            outPrev[c] = outNext[c] = 0.0;
+            phase[c] = 0;
         }
     }
 
+    /** Adds amount (ramped from a0 to a1) times the phat signal to x[0..n). */
+    void processBlock (int c, double* x, int n, double a0, double a1) noexcept
+    {
+        const double inv = 1.0 / (double) std::max (1, n), invD = 1.0 / (double) decim;
+        for (int i = 0; i < n; ++i)
+        {
+            lp1[c] += aDetIn * (x[i] - lp1[c]);
+            if (phase[c] == 0)
+            {
+                outPrev[c] = outNext[c];
+                outNext[c] = core (c, lp1[c]);
+            }
+            const double t = (double) (phase[c] + 1) * invD;
+            const double y = outPrev[c] + t * (outNext[c] - outPrev[c]);
+            if (++phase[c] >= decim) phase[c] = 0;
+            x[i] += (a0 + (a1 - a0) * (double) (i + 1) * inv) * y;
+        }
+    }
+
+    /** Single-sample version (no decimation), kept for tests. */
     double process (int c, double x) noexcept
     {
-        lp1[c] += aDet * (x - lp1[c]);
-        lp2[c] += aDet * (lp1[c] - lp2[c]);
+        lp1[c] += aDetIn * (x - lp1[c]);
+        return core (c, lp1[c]);
+    }
+
+private:
+    double core (int c, double l1) noexcept
+    {
+        lp2[c] += aDet * (l1 - lp2[c]);
         const double low = lp2[c];
         const double a = std::abs (low);
         env[c] = a > env[c] ? a : a + rel * (env[c] - a);
@@ -292,14 +326,17 @@ public:
         // Sub-octave + saturation harmonics of the lows + a little extra low end.
         const double warm = 0.5 * fastTanh (2.0 * low) - 0.5 * low;
         const double out = 1.6 * s2[c] + 1.2 * warm + 0.5 * low;
-        return std::isfinite (out) ? out : 0.0;
+        if (std::isfinite (out)) return out;
+        lp1[c] = lp2[c] = env[c] = s1[c] = s2[c] = 0.0;
+        return 0.0;
     }
 
-private:
-    double aDet = 0.01, aSub = 0.005, rel = 0.999;
+    double aDetIn = 0.01, aDet = 0.01, aSub = 0.005, rel = 0.999;
     double lp1[2] {}, lp2[2] {}, env[2] {}, s1[2] {}, s2[2] {};
     int state[2] { 1, 1 };
     double flip[2] { 1.0, 1.0 };
+    double outPrev[2] {}, outNext[2] {};
+    int phase[2] {}, decim = 1;
 };
 
 // ---------------------------------------------------------------------------

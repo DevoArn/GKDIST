@@ -7,6 +7,7 @@
 #include "dsp/RegionDesign.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <complex>
 #include <cstdio>
 #include <vector>
@@ -554,7 +555,8 @@ static void testPerformance()
 {
     std::printf ("[11] CPU (stereo, 48 kHz, 256-sample blocks)\n");
     const double fs = 48000.0;
-    auto bench = [&] (int os, int numBands, bool everything)
+    // disable: bit mask of modules left out (profiling breakdown, GKD_PROFILE=1)
+    auto bench = [&] (int os, int numBands, bool everything, int disable = 0, const char* label = nullptr)
     {
         Setup s;
         for (int b = 0; b < numBands; ++b)
@@ -564,10 +566,15 @@ static void testPerformance()
             p.type = (DistType) (b % ((int) DistType::Count - 1));
             if (everything)
             {
-                p.filterType = BandFilter::LowPass; p.phat = 0.3; p.noiseDb = -60.0; p.compOn = true; p.clipMode = ClipMode::Soft;
-                p.fxType = FxType::Phaser; p.fxMix = 0.5; p.dynOn = true; p.detMode = DetMode::Bell;
-                p.dynOn = true; p.dynDrive = 12.0;
+                if (! (disable & 1))  p.filterType = BandFilter::LowPass;
+                if (! (disable & 2))  p.phat = 0.3;
+                if (! (disable & 4))  p.noiseDb = -60.0;
+                if (! (disable & 8))  p.compOn = true;
+                if (! (disable & 16)) p.clipMode = ClipMode::Soft;
+                if (! (disable & 32)) { p.fxType = FxType::Phaser; p.fxMix = 0.5; }
+                if (! (disable & 64)) { p.dynOn = true; p.detMode = DetMode::Bell; p.dynDrive = 12.0; }
             }
+            if (disable & 128) { p.used = true; p.enabled = true; p.driveDb = 0.0; p.type = DistType::SoftClip; }
         }
         s.g.compOn = everything; s.g.limitOn = true; s.g.hpOn = true; s.g.clipOn = everything;
         DistEngine e;
@@ -583,7 +590,10 @@ static void testPerformance()
             e.process (io, 2, 256, s.in);
         }
         const double sec = std::chrono::duration<double> (std::chrono::high_resolution_clock::now() - t0).count();
-        std::printf ("  %2d bands%s, os %dx: %5.1f %% of one core\n", numBands, everything ? " (all modules)" : "", 1 << os, 100.0 * sec / seconds);
+        if (label != nullptr)
+            std::printf ("  without %-12s %5.1f %%\n", label, 100.0 * sec / seconds);
+        else
+            std::printf ("  %2d bands%s, os %dx: %5.1f %% of one core\n", numBands, everything ? " (all modules)" : "", 1 << os, 100.0 * sec / seconds);
         return 100.0 * sec / seconds;
     };
     bench (0, 4, false);
@@ -593,6 +603,13 @@ static void testPerformance()
     const double worst = bench (2, 24, true);
     bench (3, 24, true);
     CHECK (worst < 50.0, "24 bands with all modules at 4x need %.1f %% of a core", worst);
+    if (juce::SystemStats::getEnvironmentVariable ("GKD_PROFILE", {}).isNotEmpty())
+    {
+        std::printf ("  breakdown, 24 bands at 4x:\n");
+        const char* names[] = { "filter", "phat", "noise", "comp", "clip", "fx", "dynamics" };
+        for (int m = 0; m < 7; ++m) bench (2, 24, true, 1 << m, names[m]);
+        bench (2, 24, true, 127, "all modules");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -721,6 +738,149 @@ static void testBrickwall()
     std::printf ("  3 kHz tone through a clipping 1 kHz Low band: 9 kHz harmonic 12 dB/oct %.1f dB, brickwall %.1f dB (4x: %.1f dB)\n",
                  soft, brick, brick4);
     CHECK (soft > -60.0 && brick < -90.0 && brick4 < -90.0, "brickwall keeps content outside the region clean");
+}
+
+static void testPhaseDistortion()
+{
+    std::printf ("[17] Phase distortion\n");
+    const double fs = 48000.0;
+    const int n = 48000, start = n / 2, len = 16384;
+    double lastRms = 0.0;
+    auto run1 = [&] (double driveDb, double tone, double& h1, double& h2, double& h3, double& peak, bool& finite)
+    {
+        Setup s;
+        auto& b = s.band (0);
+        b = linearFullBand();
+        b.type = DistType::PhaseDist; b.driveDb = driveDb; b.bias = tone;
+        DistEngine e;
+        e.prepare (fs, 512, 2, 2);
+        Stereo y = sine (fs, n, { { 110.0, 0.5 } });
+        run (e, s, y);
+        h1 = toneAmp (y.L, start, len, 110.0, fs);
+        h2 = toneAmp (y.L, start, len, 220.0, fs) / h1;
+        h3 = toneAmp (y.L, start, len, 330.0, fs) / h1;
+        peak = 0.0; finite = true;
+        for (int i = start; i < n; ++i) { finite = finite && std::isfinite (y.L[(size_t) i]); peak = std::max (peak, (double) std::abs (y.L[(size_t) i])); }
+        lastRms = rms (y.L, start, len);
+    };
+    double h1, h2, h3, pk; bool fin;
+    run1 (0.0, 0.0, h1, h2, h3, pk, fin);
+    std::printf ("  depth 0 dB:  110 Hz %.2f dB, H2 %.1f dB, H3 %.1f dB\n", db (h1 / 0.5), db (h2), db (h3));
+    CHECK (std::abs (db (h1 / 0.5)) < 0.1 && db (h2) < -80.0 && db (h3) < -80.0, "phase distortion at 0 dB is clean");
+    double h1b, h2b, h3b, pkb; bool finb;
+    run1 (24.0, 0.0, h1b, h2b, h3b, pkb, finb);
+    const double rmsB = lastRms;
+    double h1c, h2c, h3c, pkc; bool finc;
+    run1 (48.0, 0.0, h1c, h2c, h3c, pkc, finc);
+    const double rmsC = lastRms, rmsIn = 0.5 / std::sqrt (2.0);
+    std::printf ("  depth 24 dB: 110 Hz %.2f dB, H2 %.1f dB, H3 %.1f dB, peak %.3f\n", db (h1b / 0.5), db (h2b), db (h3b), pkb);
+    std::printf ("  depth 48 dB: 110 Hz %.2f dB, H2 %.1f dB, H3 %.1f dB, peak %.3f\n", db (h1c / 0.5), db (h2c), db (h3c), pkc);
+    std::printf ("  RMS change: depth 24 dB %+.2f dB, 48 dB %+.2f dB\n", db (rmsB / rmsIn), db (rmsC / rmsIn));
+    CHECK (finb && finc && std::abs (db (rmsB / rmsIn)) < 1.0 && std::abs (db (rmsC / rmsIn)) < 1.5 && pkc < 0.75,
+           "phase distortion keeps the level (RMS %+.2f dB, peak %.3f)", db (rmsC / rmsIn), pkc);
+    CHECK (db (h2b) > -45.0 && db (h2c) > db (h2b) + 3.0 && db (h3c) > -40.0, "phase distortion creates harmonics that grow with depth");
+    double h1d, h2d, h3d, pkd; bool find;
+    run1 (48.0, 1.0, h1d, h2d, h3d, pkd, find);
+    std::printf ("  depth 48 dB, tone +1: H2 %.1f dB, H3 %.1f dB\n", db (h2d), db (h3d));
+    CHECK (find, "phase distortion with bright tone is stable");
+}
+
+static void testOtt()
+{
+    std::printf ("[18] OTT 3-band upward / downward compressor\n");
+    const double fs = 48000.0;
+
+    // 1. The gain law of each band (exact).
+    {
+        OttCompressor o;
+        o.prepare (fs);
+        o.set (OttCompressor::Settings());
+        bool ok = true;
+        for (int b = 0; b < OttCompressor::kBands; ++b)
+        {
+            const double atRef = o.staticGainDb (b, -24.0), loud = o.staticGainDb (b, -6.0);
+            const double quiet = o.staticGainDb (b, -50.0), silent = o.staticGainDb (b, -100.0), makeup = o.staticGainDb (b, -35.9);
+            std::printf ("  band %d gain: -24 dB %+.2f, -6 dB %+.2f, -50 dB %+.2f, -100 dB %+.2f (make-up only)\n", b + 1, atRef, loud, quiet, silent);
+            ok = ok && std::abs (atRef) < 1.0e-9 && loud < -15.0 && quiet > makeup + 5.0;
+            // silence: no upward boost, only the fixed make-up
+            const double expectedMakeup = (-24.0 - (b == 0 ? -33.8 : (b == 1 ? -30.2 : -35.5))) * (1.0 - 1.0 / 66.7);
+            ok = ok && std::abs (silent - expectedMakeup) < 1.0e-9;
+        }
+        CHECK (ok, "OTT gain law: unity at the reference, cut above, boost below, none for silence");
+    }
+
+    // 2. In the engine (TIME 10 %: the detectors settle within the test).
+    const int n = 72000, start = 48000, len = 16384;
+    auto gainDb = [&] (double f, double ampDb, double depth, double up, double down) -> double
+    {
+        Setup s;
+        s.g.compOn = true; s.g.compMode = 1;
+        s.g.ottDepth = depth; s.g.ottUp = up; s.g.ottDown = down; s.g.ottTime = 0.1;
+        DistEngine e;
+        e.prepare (fs, 512, 2, 0);
+        const double a = std::pow (10.0, ampDb / 20.0);
+        Stereo y = sine (fs, n, { { f, a } });
+        run (e, s, y);
+        return db (toneAmp (y.L, start, len, f, fs) / a);
+    };
+    // depth 0: the three bands sum flat (phase-compensated crossovers)
+    double flatMax = 0.0;
+    for (double f : { 40.0, 88.3, 300.0, 1000.0, 2500.0, 6000.0, 15000.0 })
+        flatMax = std::max (flatMax, std::abs (gainDb (f, -24.0, 0.0, 1.0, 1.0)));
+    std::printf ("  depth 0: bands sum flat within %.3f dB (40 Hz - 15 kHz)\n", flatMax);
+    CHECK (flatMax < 0.05, "OTT crossovers sum flat (%.3f dB)", flatMax);
+
+    // (the empty bands lift the tone's small leakage into them, as OTT does: a little tolerance)
+    const double ref = gainDb (500.0, -24.0, 1.0, 1.0, 1.0);
+    const double loud = gainDb (500.0, -6.0, 1.0, 1.0, 1.0);
+    const double quiet = gainDb (500.0, -50.0, 1.0, 1.0, 1.0);
+    const double quietNoUp = gainDb (500.0, -50.0, 1.0, 0.0, 1.0);
+    const double loudNoDown = gainDb (500.0, -6.0, 1.0, 1.0, 0.0);
+    std::printf ("  500 Hz tone: at -24 dB %+.2f dB, at -6 dB %+.2f dB (no downward %+.2f), at -50 dB %+.2f dB (no upward %+.2f)\n",
+                 ref, loud, loudNoDown, quiet, quietNoUp);
+    CHECK (std::abs (ref) < 2.0, "reference level passes about unchanged (%+.2f dB)", ref);
+    CHECK (loud < -12.0 && std::abs (loudNoDown) < 1.0, "downward compression of loud parts (%+.2f dB)", loud);
+    CHECK (quiet > 9.0 && quiet - quietNoUp > 5.0, "upward compression of quiet parts (%+.2f dB)", quiet);
+    std::printf ("  dynamic range of the two tones: 44 dB in, %.1f dB out\n", (-6.0 + loud) - (-50.0 + quiet));
+    CHECK ((-6.0 + loud) - (-50.0 + quiet) < 22.0, "OTT squeezes the dynamic range");
+
+    // Silence is not lifted into audible noise.
+    {
+        Setup s;
+        s.g.compOn = true; s.g.compMode = 1; s.g.ottTime = 0.1;
+        DistEngine e;
+        e.prepare (fs, 512, 2, 0);
+        Stereo y = sine (fs, n, { { 1000.0, 1.0e-5 } });   // -100 dBFS
+        run (e, s, y);
+        const double out = db (rms (y.L, start, len) * std::sqrt (2.0));
+        std::printf ("  -100 dBFS tone -> %.1f dBFS\n", out);
+        CHECK (out < -88.0, "silence is not boosted (%.1f dBFS)", out);
+    }
+    // Stability: random OTT settings and level jumps.
+    {
+        Setup s;
+        s.g.compOn = true; s.g.compMode = 1;
+        DistEngine e;
+        e.prepare (fs, 256, 2, 2);
+        juce::Random rng (77);
+        bool finite = true;
+        double peak = 0.0;
+        for (int blk = 0; blk < 400; ++blk)
+        {
+            s.g.ottDepth = rng.nextDouble(); s.g.ottTime = 0.01 + 9.99 * rng.nextDouble();
+            s.g.ottUp = rng.nextDouble(); s.g.ottDown = rng.nextDouble();
+            s.g.ottInDb = -24.0 + 48.0 * rng.nextDouble(); s.g.ottOutDb = -24.0 + 24.0 * rng.nextDouble();
+            s.g.ottLowX = 40.0 + 460.0 * rng.nextDouble(); s.g.ottHighX = 800.0 + 9200.0 * rng.nextDouble();
+            s.g.compMode = rng.nextInt (10) == 0 ? 0 : 1;
+            Stereo y ((size_t) 256);
+            const float amp = (float) std::pow (10.0, -60.0 * rng.nextDouble() / 20.0);
+            for (int i = 0; i < 256; ++i) { y.L[(size_t) i] = amp * (rng.nextFloat() * 2.0f - 1.0f); y.R[(size_t) i] = y.L[(size_t) i]; }
+            run (e, s, y, 256);
+            for (int i = 0; i < 256; ++i) { finite = finite && std::isfinite (y.L[(size_t) i]); peak = std::max (peak, (double) std::abs (y.L[(size_t) i])); }
+        }
+        std::printf ("  random OTT settings: finite %s, peak %.2f\n", finite ? "yes" : "NO", peak);
+        CHECK (finite && peak < 64.0, "OTT stable under random settings");
+    }
 }
 
 static void testFxPanMute()
@@ -917,6 +1077,8 @@ int main()
     testDetectorBell();
     testModulation();
     testBrickwall();
+    testPhaseDistortion();
+    testOtt();
     testPerformance();
     std::printf ("\n%s (%d failure%s)\n", failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED", failures, failures == 1 ? "" : "s");
     return failures == 0 ? 0 : 1;

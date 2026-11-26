@@ -88,9 +88,13 @@ fully transparent, and bands can overlap and run in series.
   region), Pan, Delete.
 
 **Distortion** (per band) – Soft Clip, Hard Clip, Tube, Tape, Transistor,
-Diode, Fuzz, Foldback, Rectify, Bitcrush. Drive 0 – 48 dB, Bias (asymmetry –
-even harmonics; sample-rate reduction for Bitcrush), Auto Gain (keeps the
-level constant when the drive changes). A live transfer curve shows the shape.
+Diode, Fuzz, Foldback, Rectify, Bitcrush and **Phase Dist**. Drive 0 – 48 dB,
+Bias (asymmetry – even harmonics; sample-rate reduction for Bitcrush), Auto
+Gain (keeps the level constant when the drive changes). A live transfer curve
+shows the shape and moves with dynamics and modulation. *Phase Dist* warps the
+waveform in time instead of clipping it: the band modulates its own phase
+through a short delay (Depth up to 4 ms, Tone = brightness of the modulator) –
+FM-like harmonics, especially rich on bass, at an unchanged level.
 
 **Per-band effect chain** – seven modules shown as tiles in the *EFFECT CHAIN*
 (each with a short summary such as "LP 5.0k" or "Fuzz 22 dB"). Click a tile
@@ -137,18 +141,37 @@ glow with their live output level, overlapping bands mix their colours, and
 **clashes** – frequencies where two active bands work hard at the same time –
 are marked red under the curves (the hover read-out names the competing band).
 
-**Waveform view** (*WAVEFORM* button) – a scrolling waveform (1 – 10 s): the
+**OTT mode** of the bus compressor (*OTT* button) – 3-band upward + downward
+compression: the signal is split at two Linkwitz-Riley crossovers (88 Hz and
+2.5 kHz by default; the bands sum flat), and in each band loud parts are
+pushed down and quiet parts pulled up, with the classic OTT-style thresholds,
+ratios and times. DEPTH (dry/wet), TIME (attack / release scale), UP and
+DOWN amounts, IN and OUT gain; the meter shows each band's boost / cut. The
+crossovers are tabs at the top of the display: drag them (double-click =
+default).
+
+**Waveform view** (*WAVEFORM* button) – a scrolling waveform (0.25 – 20 s,
+set with SPEED or Ctrl+wheel): the
 input in grey behind the output, which is coloured by the bands that change
 the signal at each moment, mixed by how much each band changes it. The legend
 ranks the busiest bands in view; hovering names the dominant band at that
-time. Double-click: freeze; wheel: zoom; right-click: span, zoom, freeze.
+time. It scrolls smoothly at the display's refresh rate. Double-click:
+freeze; wheel: zoom; right-click: speed, zoom, freeze.
+
+**Smooth at any refresh rate** – all animation (curves, glow, meters, scopes,
+waveform) runs on the vertical blank of the monitor the plug-in is on (60, 120,
+144, 240 Hz …) and is time-based, so it looks the same at any rate. Curves
+follow dynamics and modulation and glide between audio blocks. A view whose
+drawing would take more than its share of a frame repaints every 2nd / 3rd
+frame instead, so the interface stays responsive.
 
 **Colour themes** – *Settings → Colour Theme*: Ember (warm, default), Sunset
 (warm), Vintage (warm) or Midnight (cool). The interface switches at once; the
 choice is remembered for all GKDIST instances.
 
 **Global section** – oversampling (Off, 2x, 4x, 8x, linear-phase with exact
-integer latency), high-pass / low-pass (12 or 24 dB/oct), bus compressor,
+integer latency), high-pass / low-pass (12 or 24 dB/oct), bus compressor (with
+an **OTT** mode, below),
 noise, clipper (soft / hard), brick-wall limiter with 1 ms look-ahead (no
 sample exceeds the ceiling), dry/wet mix (latency-compensated), output gain,
 click-free latency-compensated bypass.
@@ -156,7 +179,7 @@ click-free latency-compensated bypass.
 **Workflow** – undo/redo, A/B with copy, 12 factory presets and user presets
 (saved to `Documents\GKDIST\Presets`), pre / post spectrum analyser
 (range, resolution, speed, tilt and freeze in *Settings*), resizable window, GPU (OpenGL) drawing (toggle in *Settings*),
-context menus, 1241 parameters (all automatable except the chain order).
+context menus, 1250 parameters (all automatable except the chain order).
 Type, shape, slope, filter, FX and order changes are click-free (the band
 fades out and back in over 5 ms).
 
@@ -173,7 +196,8 @@ fades out and back in over 5 ms).
 | Drag **T** handle (dynamic band) | Detector bell frequency + threshold; wheel: bell Q |
 | Click / drag a module in EFFECT CHAIN | Edit that module / change the band's effect order (right-click: reset) |
 | Click a band chip (next to the band name) | Select that band |
-| Waveform: double-click / wheel / right-click | Freeze / zoom / span, zoom, freeze menu |
+| Waveform: double-click / wheel / Ctrl+wheel / right-click | Freeze / zoom / speed / speed, zoom, freeze menu |
+| Drag an **OTT** tab (top of the display, OTT on) | Move that crossover; double-click: default |
 | Click / double-click a mixer strip header | Select the band / open it on the BAND page |
 | Right-click node / empty area | Band menu (shape, type, filter, FX, solo, mute, dynamics, detector …) / add band, delete all |
 | Delete, Esc | Delete selected band, deselect |
@@ -202,6 +226,12 @@ fades out and back in over 5 ms).
   limited.
 - Effect chain: all 5040 orders encode / decode; a low pass after a hard
   clipper removes the 3rd harmonic 35 dB more than one before it.
+- Phase distortion: clean at 0 dB depth (harmonics below −100 dB), 2nd
+  harmonic −10 dB at 24 dB and +7 dB at 48 dB, level within 1.4 dB.
+- OTT: the three bands sum flat (0.000 dB, 40 Hz – 15 kHz); gain law unity at
+  −24 dB per band; a −6 dB tone is pushed down 13 dB, a −50 dB tone lifted
+  13 dB (44 dB of range squeezed to 18 dB); silence is not lifted; stable with
+  random settings.
 - Brickwall regions: Low / High −84 dB half an octave past the edge; Bell
   (Q 1) 0.00 dB in the band, below −100 dB outside; a clipping 1 kHz Low band
   leaves a 3 kHz tone untouched (harmonic −158 dB vs. −37 dB at 12 dB/oct).
@@ -216,7 +246,7 @@ fades out and back in over 5 ms).
   modulation measured in the engine.
 - CPU, stereo 48 kHz: 4 bands at 4x 3 % of one core; 24 bands with every
   module on (incl. phaser and dynamics) at 4x about 45 %.
-- VST3 host test: loads, side-chain bus, 1241 parameters, latency switching,
+- VST3 host test: loads, side-chain bus, 1250 parameters, latency switching,
   transparent with no bands, hard clipping produces odd harmonics with auto
   gain holding the level, limiter ceiling, state round trip.
 - UI test: dragging nodes, the filter handle, the detector handle and chain

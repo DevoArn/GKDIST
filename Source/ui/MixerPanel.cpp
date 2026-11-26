@@ -81,24 +81,31 @@ void MixerStrip::setBand (int b)
         }
     }
     meterDb = peakHold = -100.0f;
-    tick();
+    tick (1.0);
 }
 
-void MixerStrip::tick()
+void MixerStrip::tick (double dt)
 {
     if (band < 0) return;
     const auto p = proc.refs.readBand (band);
     const auto t = proc.getTelemetry (band);
     const bool live = proc.isAudioRunning();
-    const float lvl = live ? t.levelDb : -100.0f;
-    meterDb = lvl > meterDb ? lvl : meterDb + 0.35f * (lvl - meterDb);
-    if (lvl >= peakHold) { peakHold = lvl; holdCount = 30; }
-    else if (--holdCount < 0) peakHold = std::max (lvl, peakHold - 1.0f);
+    const float lvl = live ? juce::jmax (-100.0f, t.levelDb) : -100.0f;
+    const float oldMeter = meterDb, oldPeak = peakHold, oldInt = intensity;
+    // instant attack, ~120 ms release; peak hold 1 s, then falls at 30 dB/s
+    meterDb = lvl > meterDb ? lvl : smoothTowards (meterDb, lvl, dt, 0.12);
+    if (lvl >= peakHold) { peakHold = lvl; holdTime = 1.0; }
+    else if ((holdTime -= dt) < 0.0) peakHold = std::max (lvl, peakHold - (float) (30.0 * dt));
     const float drv = live ? t.driveDb : (float) p.driveDb, w = live ? t.wet : (float) p.wet;
-    intensity = juce::jlimit (0.0f, 1.0f, drv / 36.0f) * (0.3f + 0.7f * juce::jlimit (0.0f, 1.0f, w));
-    typeName = p.fxType != FxType::Off ? fxTypeNames()[(int) p.fxType] : distTypeNames()[(int) p.type];
-    repaint (meterArea);
-    repaint (0, 0, getWidth(), 34);
+    intensity = smoothTowards (intensity, juce::jlimit (0.0f, 1.0f, drv / 36.0f) * (0.3f + 0.7f * juce::jlimit (0.0f, 1.0f, w)), dt, 0.03);
+    const auto name = p.fxType != FxType::Off ? fxTypeNames()[(int) p.fxType] : distTypeNames()[(int) p.type];
+    if (std::abs (meterDb - oldMeter) > 0.05f || std::abs (peakHold - oldPeak) > 0.05f)
+        repaint (meterArea);
+    if (std::abs (intensity - oldInt) > 0.002f || name != typeName)
+    {
+        typeName = name;
+        repaint (0, 0, getWidth(), 34);
+    }
 }
 
 void MixerStrip::resized()
@@ -200,7 +207,7 @@ MixerPanel::MixerPanel (GKDistProcessor& p) : proc (p)
     }
     usedNow.fill (false);
     rebuild();
-    startTimerHz (30);
+    startTimerHz (15);   // structure only; the meters run on the frame clock
 }
 
 MixerPanel::~MixerPanel() { stopTimer(); }
@@ -240,8 +247,6 @@ void MixerPanel::timerCallback()
     for (int b = 0; b < kNumBands; ++b)
         if (proc.refs.readBand (b).used != usedNow[(size_t) b]) { changed = true; break; }
     if (changed) rebuild();
-    if (! isVisible()) return;   // only the active page updates its meters
-    for (int i = 0; i < numVisible; ++i) strips[(size_t) i]->tick();
 }
 
 void MixerPanel::resized()

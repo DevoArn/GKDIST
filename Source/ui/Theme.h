@@ -90,6 +90,8 @@ public:
     void drawCallOutBoxBackground (juce::CallOutBox&, juce::Graphics&, const juce::Path&, juce::Image&) override;
 
     static juce::Font font (float h, bool bold = false);
+    /** Overall text size (1.0 = the original design size). */
+    static constexpr float kTextScale = 1.15f;
 };
 
 } // namespace gkd::ui

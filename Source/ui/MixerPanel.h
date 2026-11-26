@@ -5,6 +5,7 @@
 #pragma once
 
 #include "Controls.h"
+#include "FrameClock.h"
 #include "../PluginProcessor.h"
 
 namespace gkd::ui
@@ -19,7 +20,7 @@ public:
     void setBand (int b);
     int  getBand() const noexcept { return band; }
     void setSelected (bool s) { if (s != selected) { selected = s; repaint(); } }
-    void tick();   // meter + header refresh
+    void tick (double dt);   // meter + header refresh (every display frame)
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -36,7 +37,7 @@ private:
     int band = -1;
     bool selected = false;
     float meterDb = -100.0f, peakHold = -100.0f, intensity = 0.0f;
-    int holdCount = 0;
+    double holdTime = 0.0;
     juce::String typeName;
 
     Knob drive { "DRIVE" }, wet { "WET" };
@@ -72,6 +73,11 @@ private:
     std::array<std::unique_ptr<MixerStrip>, kNumBands> strips;
     std::array<bool, kNumBands> usedNow {};
     int numVisible = 0, selectedBand = -1;
+    FrameClock clock { *this, [this] (double dt)
+    {
+        if (! isVisible()) return;   // only the active page animates
+        for (int i = 0; i < numVisible; ++i) strips[(size_t) i]->tick (dt);
+    } };   // last: stops first
 };
 
 } // namespace gkd::ui

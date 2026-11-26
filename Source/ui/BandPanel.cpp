@@ -25,7 +25,8 @@ namespace
         switch (m)
         {
             case Module::Filter:     return "Shapes the band at its place in the chain. Drag the F handle on the display.";
-            case Module::Distortion: return "The band's distortion. Bias adds even harmonics, Auto Gain keeps the level steady.";
+            case Module::Distortion: return "The band's distortion. Bias adds even harmonics, Auto Gain keeps the level steady. "
+                                            "Phase Dist warps the timing instead of the level (Depth, Tone).";
             case Module::Phat:       return "Adds a sub-octave and warm low end, generated from the band's lows.";
             case Module::Noise:      return "Noise shaped to the band's region. Follow makes it breathe with the signal.";
             case Module::Fx:         return "Modulation effect: phaser, flanger, chorus, vibrato, tremolo or auto pan.";
@@ -49,17 +50,23 @@ namespace
 }
 
 // ---------------------------------------------------------------------------
-void BandChips::tick()
+void BandChips::tick (double dt)
 {
     const bool live = proc.isAudioRunning();
+    bool changed = false;
     for (int b = 0; b < kNumBands; ++b)
     {
-        bands[b] = proc.refs.readBand (b);
+        const auto p = proc.refs.readBand (b);
+        changed = changed || p.used != bands[b].used || p.enabled != bands[b].enabled;
+        bands[b] = p;
         const auto t = proc.getTelemetry (b);
-        const float drive = live ? t.driveDb : (float) bands[b].driveDb, wet = live ? t.wet : (float) bands[b].wet;
-        intensity[b] = juce::jlimit (0.0f, 1.0f, drive / 36.0f) * (0.3f + 0.7f * juce::jlimit (0.0f, 1.0f, wet));
+        const float drive = live ? t.driveDb : (float) p.driveDb, wet = live ? t.wet : (float) p.wet;
+        const float target = juce::jlimit (0.0f, 1.0f, drive / 36.0f) * (0.3f + 0.7f * juce::jlimit (0.0f, 1.0f, wet));
+        const float v = smoothTowards (intensity[b], target, dt, 0.03);
+        changed = changed || std::abs (v - intensity[b]) > 0.002f;
+        intensity[b] = v;
     }
-    repaint();
+    if (changed) repaint();
 }
 
 int BandChips::chipAt (float x) const
@@ -205,6 +212,7 @@ void BandPanel::setBand (int b)
     band = b;
     chips.setSelected (b);
     chips.tick();   // a freshly built panel shows the bands at once
+    liveBand = -1;
     auto prm = [this] (int idx) { return band >= 0 ? proc.param (bandParamId (band, idx)) : nullptr; };
 
     freq.attach (prm (bpFreq)); q.attach (prm (bpQ)); drive.attach (prm (bpDrive)); bias.attach (prm (bpBias));
@@ -254,10 +262,10 @@ void BandPanel::refresh()
     q.setEnabled (p.shape == Shape::Bell);
     slopeBox.setEnabled (p.shape != Shape::Full);
     freq.setEnabled (p.shape != Shape::Full);
-    const bool crush = p.type == DistType::Bitcrush;
-    bias.setCaption (crush ? "RATE" : "BIAS");
-    drive.setCaption (crush ? "CRUSH" : "DRIVE");
-    autoBtn.setEnabled (! crush);
+    const bool crush = p.type == DistType::Bitcrush, phase = p.type == DistType::PhaseDist;
+    bias.setCaption (crush ? "RATE" : (phase ? "TONE" : "BIAS"));
+    drive.setCaption (crush ? "CRUSH" : (phase ? "DEPTH" : "DRIVE"));
+    autoBtn.setEnabled (! crush && ! phase);
 
     const bool filterOn = p.filterType != BandFilter::Off;
     for (auto* c : std::initializer_list<juce::Component*> { &filterSlopeBox, &fFreq, &fRes }) c->setEnabled (filterOn);
@@ -278,17 +286,52 @@ void BandPanel::refresh()
     detFreq.setEnabled (p.dynOn && p.detMode == DetMode::Bell);
     detQ.setEnabled (p.dynOn && p.detMode == DetMode::Bell);
     pan.setEnabled (proc.getMainBusNumOutputChannels() > 1);
-    curve.set (p.type, p.driveDb, p.bias, p.autoGain, bandColour (band));
-    response.set (p, proc.getCurrentSampleRate(), bandColour (band));
     chain.update (p);
 }
 
 void BandPanel::timerCallback()
 {
-    chips.tick();
     if (band < 0) return;
     refresh();
-    if (band < 0) return;
+}
+
+void BandPanel::frame (double dt)
+{
+    chips.tick (dt);
+    if (band < 0 || ! isVisible()) return;
+    const auto p = proc.refs.readBand (band);
+    if (! p.used) return;
+
+    // Curves follow the band as it moves with dynamics and modulation.
+    const bool live = proc.isAudioRunning();
+    const auto t = proc.getTelemetry (band);
+    const float tDrive = live ? juce::jlimit (0.0f, 60.0f, t.driveDb) : (float) p.driveDb;
+    const float tBias = live ? juce::jlimit (-1.0f, 1.0f, t.bias) : (float) p.bias;
+    const float tLogF = (float) std::log (live ? juce::jlimit (20.0, 20000.0, (double) t.filterFreq) : p.filterFreq);
+    const float tLogR = (float) std::log (live ? juce::jlimit (0.1, 10.0, (double) t.filterRes) : p.filterRes);
+    const float tGain = live ? juce::jlimit (-24.0f, 24.0f, t.filterGainDb) : (float) p.filterGainDb;
+    if (! live || liveBand != band)
+    {
+        liveDrive = tDrive; liveBias = tBias; liveFiltLogF = tLogF; liveFiltLogR = tLogR; liveFiltGain = tGain;
+        liveBand = band;
+    }
+    else
+    {
+        constexpr double tau = 0.012;
+        liveDrive = smoothTowards (liveDrive, tDrive, dt, tau);
+        liveBias = smoothTowards (liveBias, tBias, dt, tau);
+        liveFiltLogF = smoothTowards (liveFiltLogF, tLogF, dt, tau);
+        liveFiltLogR = smoothTowards (liveFiltLogR, tLogR, dt, tau);
+        liveFiltGain = smoothTowards (liveFiltGain, tGain, dt, tau);
+    }
+    // rounding: a redraw only when the curve visibly changes
+    curve.set (p.type, std::round (liveDrive * 20.0f) / 20.0, std::round (liveBias * 500.0f) / 500.0, p.autoGain, bandColour (band));
+    auto lp = p;
+    lp.filterFreq = std::exp ((double) std::round (liveFiltLogF * 2000.0f) / 2000.0);
+    lp.filterRes = std::exp ((double) std::round (liveFiltLogR * 1000.0f) / 1000.0);
+    lp.filterGainDb = std::round (liveFiltGain * 50.0f) / 50.0;
+    response.set (lp, proc.getCurrentSampleRate(), bandColour (band));
+
     const float gr = proc.getCompGr (band);
     grMeter.setValue (gr / 24.0f, "GR " + juce::String (gr, 1) + " dB");
     const float a = proc.getDynAmount (band);
@@ -339,8 +382,8 @@ void BandPanel::paint (juce::Graphics& g)
     g.setFont (LookAndFeel::font (11.0f));
     g.setColour (Colours::textDim);
     const int tw = LookAndFeel::font (14.0f, true).getStringWidth (title) + 12;
-    g.drawText (moduleHelp (module), pageArea.getX() + tw, pageArea.getY(), pageArea.getWidth() - tw, 18,
-                juce::Justification::centredLeft);
+    g.drawFittedText (moduleHelp (module), pageArea.getX() + tw, pageArea.getY() + 1, pageArea.getWidth() - tw, 34,
+                      juce::Justification::topLeft, 2, 1.0f);
     if (! ChainStrip::moduleActive (module, p))
     {
         g.setColour (Colours::textDim.withAlpha (0.7f));

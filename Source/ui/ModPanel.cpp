@@ -150,7 +150,7 @@ ModPanel::ModPanel (GKDistProcessor& p) : proc (p)
         u.target.setTooltip ("Band parameter to modulate");
         u.amount.setTooltip ("Amount (negative inverts); 100 % = the full range of the target");
     }
-    startTimerHz (30);
+    startTimerHz (15);   // control states; the animation runs on the frame clock
 }
 
 ModPanel::~ModPanel() { stopTimer(); }
@@ -164,16 +164,28 @@ void ModPanel::edited()
 void ModPanel::timerCallback()
 {
     const auto g = proc.refs.readGlobal();
-    const bool live = proc.isAudioRunning();
     for (int l = 0; l < 2; ++l)
     {
-        auto& u = lfo[l];
-        u.rate.setEnabled (! g.lfoSync[l]);
-        u.div.setEnabled (g.lfoSync[l]);
-        if (isVisible())   // only the active page animates
-            u.scope.set (g.lfoShape[l], live ? proc.getLfoValue (l) : 0.0f, live ? proc.getLfoPhase (l) : 0.0f, lfoColour (l));
+        lfo[l].rate.setEnabled (! g.lfoSync[l]);
+        lfo[l].div.setEnabled (g.lfoSync[l]);
     }
-    if (! isVisible()) return;
+    for (int s = 0; s < kNumModSlots; ++s)
+    {
+        auto& u = slots[(size_t) s];
+        const bool on = proc.refs.readModSlot (s).source != ModSource::Off;
+        u.band.setEnabled (on);
+        u.target.setEnabled (on);
+        u.amount.setEnabled (on);
+    }
+}
+
+void ModPanel::frame (double)
+{
+    if (! isVisible()) return;   // only the active page animates
+    const auto g = proc.refs.readGlobal();
+    const bool live = proc.isAudioRunning();
+    for (int l = 0; l < 2; ++l)
+        lfo[l].scope.set (g.lfoShape[l], live ? proc.getLfoValue (l) : 0.0f, live ? proc.getLfoPhase (l) : 0.0f, lfoColour (l));
     const float ein = live ? proc.getEnvValue (0) : 0.0f, esc = live ? proc.getEnvValue (1) : 0.0f;
     inMeter.setValue (ein, "Input " + formatNumber (ein * 100.0f, 0) + " %");
     scMeter.setValue (esc, proc.isSidechainActive() ? "Side-chain " + formatNumber (esc * 100.0f, 0) + " %" : juce::String ("Side-chain (none)"));
@@ -182,9 +194,6 @@ void ModPanel::timerCallback()
         auto& u = slots[(size_t) s];
         const auto slot = proc.refs.readModSlot (s);
         const bool on = slot.source != ModSource::Off;
-        u.band.setEnabled (on);
-        u.target.setEnabled (on);
-        u.amount.setEnabled (on);
         const juce::Colour c = slot.source == ModSource::Lfo1 ? lfoColour (0)
                              : slot.source == ModSource::Lfo2 ? lfoColour (1)
                              : slot.source == ModSource::InputEnv ? Colours::on : Colours::scSpec;

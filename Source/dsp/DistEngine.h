@@ -7,6 +7,7 @@
 #include "BandProcessor.h"
 #include "Oversampler.h"
 #include "Modulation.h"
+#include "Ott.h"
 #include <memory>
 
 namespace gkd::dsp
@@ -57,6 +58,8 @@ public:
 
     double globalCompGainReduction() const noexcept { return gCompOnNow ? gComp.gainReductionDb() : 0.0; }
     double limiterGainReduction() const noexcept { return limiter.gainReductionDb(); }
+    /** OTT mode: current gain of band 0..2 (dB, + = upward boost, - = downward cut); 0 otherwise. */
+    double ottBandGainDb (int b) const noexcept { return gCompOnNow && compModeNow == 1 ? ott.bandGainDb (b) : 0.0; }
 
 private:
     static constexpr int kSub = 32;
@@ -78,6 +81,9 @@ private:
     // global section
     FilterChain hp, lp;
     Compressor gComp;
+    OttCompressor ott;
+    int compModeNow = 0;                    // mode in use; a change cross-fades through zero
+    double sOttLowX = 0.0, sOttHighX = 0.0; // smoothed crossovers (log Hz)
     NoiseGen gNoise[2];
     LookaheadLimiter limiter;
     bool initialised = false, gCompOnNow = false;

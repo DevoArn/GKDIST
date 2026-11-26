@@ -25,6 +25,25 @@ namespace
         return juce::String ((int) std::lround (f));
     }
 
+    /** Builds a polyline, merging near-flat runs (max error 0.3 px): narrow bands
+        lie flat along the base for most of their 512 points. */
+    struct Polyline
+    {
+        juce::Path& p;
+        bool started = false, pending = false;
+        float lastY = 0.0f, qx = 0.0f, qy = 0.0f;
+
+        void add (float x, float y)
+        {
+            if (! started) { p.startNewSubPath (x, y); started = true; lastY = y; return; }
+            if (std::abs (y - lastY) < 0.3f) { pending = true; qx = x; qy = y; return; }
+            if (pending) { p.lineTo (qx, qy); pending = false; }
+            p.lineTo (x, y);
+            lastY = y;
+        }
+        void finish() { if (pending) p.lineTo (qx, qy); pending = false; }
+    };
+
     /** Detector filter shape, exactly as the band processor builds it. */
     dsp::DesignParams detectorDesign (const BandParams& p)
     {
@@ -52,13 +71,15 @@ DistDisplay::DistDisplay (GKDistProcessor& p) : proc (p)
     setWantsKeyboardFocus (true);
     setOpaque (true);
     mixColour.fill (juce::Colours::transparentBlack);
-    lastTime = juce::Time::getMillisecondCounterHiRes();
-    startTimerHz (60);
 }
 
-DistDisplay::~DistDisplay() { stopTimer(); }
+DistDisplay::~DistDisplay() = default;
 
-void DistDisplay::resized() { plot = getLocalBounds().toFloat(); }
+void DistDisplay::resized()
+{
+    plot = getLocalBounds().toFloat();
+    staticLayer = {};   // re-rendered at the next paint
+}
 
 // ---------------------------------------------------------------------------
 float DistDisplay::freqToX (double f) const noexcept
@@ -125,12 +146,17 @@ juce::Point<float> DistDisplay::detectorHandlePosition (int b) const
     return { freqToX (p.detMode == DetMode::Bell ? p.detFreq : p.freq), specToY ((float) p.dynThresh) };
 }
 
-// ---------------------------------------------------------------------------
-void DistDisplay::timerCallback()
+juce::Rectangle<float> DistDisplay::crossoverTab (int which) const
 {
-    const double now = juce::Time::getMillisecondCounterHiRes();
-    const double dt = juce::jlimit (0.001, 0.1, (now - lastTime) * 0.001);
-    lastTime = now;
+    const auto g = proc.refs.readGlobal();
+    if (! g.compOn || g.compMode != 1) return {};
+    const float x = freqToX (which == 0 ? g.ottLowX : g.ottHighX);
+    return { x - 34.0f, plot.getY() + 3.0f, 68.0f, 17.0f };
+}
+
+// ---------------------------------------------------------------------------
+void DistDisplay::frame (double dt)
+{
     animTime += dt;
 
     const auto& ui = proc.uiState;
@@ -153,7 +179,31 @@ void DistDisplay::timerCallback()
         tel[b] = proc.getTelemetry (b);
         const auto& p = bands[b];
         const bool live = running && p.used;
-        liveDrive[(size_t) b] = live ? juce::jlimit (0.0f, (float) kMaxDriveDb, tel[b].driveDb) : (float) p.driveDb;
+        // Targets: live values (dynamics + modulation) while audio runs, else the parameters.
+        const float tDrive = live ? juce::jlimit (0.0f, (float) kMaxDriveDb, tel[b].driveDb) : (float) p.driveDb;
+        const float tLogF = (float) std::log (live ? juce::jlimit (10.0, 30000.0, (double) tel[b].freq) : p.freq);
+        const float tLogQ = (float) std::log (live ? juce::jlimit (0.1, 20.0, (double) tel[b].q) : p.q);
+        const float tFLogF = (float) std::log (live ? juce::jlimit (20.0, 20000.0, (double) tel[b].filterFreq) : p.filterFreq);
+        const float tFLogR = (float) std::log (live ? juce::jlimit (0.1, 10.0, (double) tel[b].filterRes) : p.filterRes);
+        const float tFGain = live ? juce::jlimit (-24.0f, 24.0f, tel[b].filterGainDb) : (float) p.filterGainDb;
+        const size_t i = (size_t) b;
+        if (! live || ! dispInit[i])
+        {
+            liveDrive[i] = tDrive; dispLogF[i] = tLogF; dispLogQ[i] = tLogQ;
+            dispFiltLogF[i] = tFLogF; dispFiltLogR[i] = tFLogR; dispFiltGain[i] = tFGain;
+            dispInit[i] = p.used;
+        }
+        else
+        {
+            // Audio telemetry arrives once per host block; glide between blocks.
+            constexpr double tau = 0.012;
+            liveDrive[i] = smoothTowards (liveDrive[i], tDrive, dt, tau);
+            dispLogF[i] = smoothTowards (dispLogF[i], tLogF, dt, tau);
+            dispLogQ[i] = smoothTowards (dispLogQ[i], tLogQ, dt, tau);
+            dispFiltLogF[i] = smoothTowards (dispFiltLogF[i], tFLogF, dt, tau);
+            dispFiltLogR[i] = smoothTowards (dispFiltLogR[i], tFLogR, dt, tau);
+            dispFiltGain[i] = smoothTowards (dispFiltGain[i], tFGain, dt, tau);
+        }
         const float wet = live ? tel[b].wet : (float) p.wet;
         float inten = juce::jlimit (0.0f, 1.0f, liveDrive[(size_t) b] / 36.0f) * (0.3f + 0.7f * juce::jlimit (0.0f, 1.0f, wet));
         if (! p.enabled) inten *= 0.3f;
@@ -167,10 +217,8 @@ void DistDisplay::timerCallback()
     updateSelectedCurves();
     updateMixAndClashes();
 
-    if (wheelCommit > 0 && --wheelCommit == 0) notifyEdit();
-    const int hz = (bool) ui.getProperty ("gpu", true) ? 60 : 40;
-    if (getTimerInterval() != 1000 / hz) startTimerHz (hz);
-    repaint();
+    if (wheelCommit > 0.0 && (wheelCommit -= dt) <= 0.0) { wheelCommit = 0.0; notifyEdit(); }
+    if (budget.due (dt) || drag.what != Handle::None) repaint();   // dragging always gets every frame
 }
 
 void DistDisplay::updateRegions()
@@ -181,19 +229,20 @@ void DistDisplay::updateRegions()
         regionRate = fs;
         for (auto& r : regions) r.valid = false;
     }
-    const bool running = proc.isAudioRunning();
     for (int b = 0; b < kNumBands; ++b)
     {
         const auto& p = bands[b];
         auto& r = regions[(size_t) b];
         if (! p.used) { r.valid = false; continue; }
-        // Live (smoothed + modulated) frequency and Q while audio runs.
-        const double f = running ? juce::jlimit (10.0, 30000.0, (double) tel[b].freq) : p.freq;
-        const double q = running ? juce::jlimit (0.1, 20.0, (double) tel[b].q) : p.q;
-        const double key[5] { (double) p.shape, f, q, (double) p.slope, fs };
-        if (r.valid && std::memcmp (key, r.key, sizeof (key)) == 0) continue;
+        // Displayed (live, smoothed) frequency and Q; tiny changes are not redrawn.
+        const double logF = dispLogF[(size_t) b], logQ = dispLogQ[(size_t) b];
+        if (r.valid && r.key[0] == (double) p.shape && r.key[3] == (double) p.slope && r.key[4] == fs
+            && std::abs (logF - r.key[1]) < 0.0015 && std::abs (logQ - r.key[2]) < 0.003)
+            continue;
+        const double key[5] { (double) p.shape, logF, logQ, (double) p.slope, fs };
         std::memcpy (r.key, key, sizeof (key));
         r.valid = true;
+        const double f = std::exp (logF), q = std::exp (logQ);
 
         if (p.shape == Shape::Full)
         {
@@ -214,16 +263,19 @@ void DistDisplay::updateSelectedCurves()
 
     if (p.filterType != BandFilter::Off)
     {
-        const double key[6] { (double) p.filterType, (double) p.filterSlope, p.filterFreq, p.filterRes, p.filterGainDb, fs + selected };
+        // The curve follows the live (modulated) filter; the F handle shows the parameter.
+        const size_t sb = (size_t) selected;
+        const double key[6] { (double) p.filterType, (double) p.filterSlope, std::round (dispFiltLogF[sb] * 2000.0),
+                              std::round (dispFiltLogR[sb] * 1000.0), std::round (dispFiltGain[sb] * 50.0), fs + selected };
         if (! filterCurve.valid || std::memcmp (key, filterCurve.key, sizeof (key)) != 0)
         {
             std::memcpy (filterCurve.key, key, sizeof (key));
             filterCurve.valid = true;
             dsp::DesignParams d;
             d.type = bandFilterDesignType (p.filterType);
-            d.freq = p.filterFreq;
-            d.q = p.filterRes;
-            d.gainDb = p.filterGainDb;
+            d.freq = std::exp ((double) dispFiltLogF[sb]);
+            d.q = std::exp ((double) dispFiltLogR[sb]);
+            d.gainDb = dispFiltGain[sb];
             d.slopeIdx = regionSlopeDesignIdx (p.filterSlope);
             const auto a = dsp::designAnalog (d, fs);
             for (int i = 0; i < kSpecPoints; ++i)
@@ -345,10 +397,10 @@ void DistDisplay::paintGrid (juce::Graphics& g)
 void DistDisplay::paintSpectrum (juce::Graphics& g, const float* lv, juce::Colour c, float alpha)
 {
     juce::Path p;
-    for (int i = 0; i < kSpecPoints; ++i)
     {
-        const float x = freqToX (pointFreq (i)), y = specToY (lv[i]);
-        if (i == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
+        Polyline pl { p };
+        for (int i = 0; i < kSpecPoints; ++i) pl.add (freqToX (pointFreq (i)), specToY (lv[i]));
+        pl.finish();
     }
     juce::Path f (p);
     f.lineTo (plot.getRight(), plot.getBottom());
@@ -363,6 +415,15 @@ void DistDisplay::paintSpectrum (juce::Graphics& g, const float* lv, juce::Colou
 void DistDisplay::paintBands (juce::Graphics& g, int solo)
 {
     const float base = driveToY (0.0);
+    auto& pp = paintProfile;
+    double t = pp.on ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+    auto lap = [&pp, &t] (double& acc)
+    {
+        if (! pp.on) return;
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        acc += now - t;
+        t = now;
+    };
 
     // Whole-pixel columns: translucent segments must neither overlap nor leave gaps.
     auto column = [this] (int i, int& x0, int& w)
@@ -382,6 +443,8 @@ void DistDisplay::paintBands (juce::Graphics& g, int solo)
         g.fillRect (juce::Rectangle<float> ((float) x0, y, (float) w, base - y));
     }
 
+    lap (pp.mixFill);
+
     // 2. Clashes: red where two active bands compete, plus a marker strip below the 0 dB line.
     const float pulse = 0.75f + 0.25f * (float) std::sin (animTime * 5.0);
     for (int i = 0; i + 1 < kSpecPoints; ++i)
@@ -397,6 +460,8 @@ void DistDisplay::paintBands (juce::Graphics& g, int solo)
         g.fillRect (juce::Rectangle<float> ((float) x0, base + 2.0f, (float) w, 3.0f + 2.0f * a));
     }
 
+    lap (pp.clash);
+
     // 3. Outlines with intensity colour and a glow that follows the live output level.
     for (int pass = 0; pass < 2; ++pass)
         for (int b = 0; b < kNumBands; ++b)
@@ -408,10 +473,14 @@ void DistDisplay::paintBands (juce::Graphics& g, int solo)
             const auto& r = regions[(size_t) b];
             const float drive = std::max (0.5f, liveDrive[(size_t) b]);
             juce::Path path;
-            path.startNewSubPath (plot.getX(), base);
-            for (int i = 0; i < kSpecPoints; ++i)
-                path.lineTo (freqToX (pointFreq (i)), driveToY (drive * r.mag[(size_t) i]));
-            path.lineTo (plot.getRight(), base);
+            {
+                Polyline pl { path };
+                pl.add (plot.getX(), base);
+                for (int i = 0; i < kSpecPoints; ++i)
+                    pl.add (freqToX (pointFreq (i)), driveToY (drive * r.mag[(size_t) i]));
+                pl.add (plot.getRight(), base);
+                pl.finish();
+            }
 
             const float inten = intensity[(size_t) b], act = activity[(size_t) b];
             const auto col = intensityColour (b, inten);
@@ -426,14 +495,46 @@ void DistDisplay::paintBands (juce::Graphics& g, int solo)
             const float glow = act * (0.3f + 0.7f * inten) * dim;
             if (glow > 0.03f)
             {
-                g.setColour (col.withAlpha (0.10f * glow));
-                g.strokePath (path, juce::PathStrokeType (10.0f * glow + 3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-                g.setColour (col.withAlpha (0.22f * glow));
-                g.strokePath (path, juce::PathStrokeType (4.0f * glow + 1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                // one soft, wide stroke (mitred joints are much cheaper than rounded ones)
+                g.setColour (col.withAlpha (0.16f * glow));
+                g.strokePath (path, juce::PathStrokeType (7.0f * glow + 2.5f, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
             }
             g.setColour (col.withAlpha ((emph ? 1.0f : 0.55f + 0.4f * inten) * dim));
             g.strokePath (path, juce::PathStrokeType ((emph ? 1.6f : 1.0f) + 1.2f * inten));
         }
+    lap (pp.outlines);
+}
+
+void DistDisplay::paintCrossovers (juce::Graphics& g)
+{
+    const auto gp = proc.refs.readGlobal();
+    if (! gp.compOn || gp.compMode != 1) return;
+    const float dash[] = { 3.0f, 5.0f };
+    g.setFont (LookAndFeel::font (10.0f, true));
+    for (int i = 0; i < 2; ++i)
+    {
+        const auto tab = crossoverTab (i);
+        const bool hot = (hover.what == Handle::Crossover && hover.band == i) || (drag.what == Handle::Crossover && drag.band == i);
+        const float x = tab.getCentreX();
+        g.setColour (Colours::accent2.withAlpha (hot ? 0.75f : 0.4f));
+        g.drawDashedLine (juce::Line<float> (x, tab.getBottom(), x, plot.getBottom() - 24.0f), dash, 2, hot ? 1.6f : 1.0f);
+        g.setColour (Colours::bg2.withAlpha (0.92f));
+        g.fillRoundedRectangle (tab, 4.0f);
+        g.setColour (Colours::accent2.withAlpha (hot ? 1.0f : 0.7f));
+        g.drawRoundedRectangle (tab, 4.0f, hot ? 1.6f : 1.0f);
+        const double f = i == 0 ? gp.ottLowX : gp.ottHighX;
+        g.drawText ("OTT " + (f >= 1000.0 ? formatNumber (f / 1000.0, 1) + "k" : formatNumber (f, 0)), tab, juce::Justification::centred);
+    }
+}
+
+void DistDisplay::beginGlobalGesture (int globalParam)
+{
+    endGesture();
+    if (auto* prm = proc.param (globalParamId (globalParam)))
+    {
+        prm->beginChangeGesture();
+        gestureParams.push_back (prm);
+    }
 }
 
 void DistDisplay::paintSelectedExtras (juce::Graphics& g)
@@ -454,10 +555,10 @@ void DistDisplay::paintSelectedExtras (juce::Graphics& g)
         g.drawText ("FILTER 0 dB", juce::Rectangle<float> (plot.getRight() - 90.0f, mid - 14.0f, 84.0f, 12.0f), juce::Justification::centredRight);
 
         juce::Path c;
-        for (int i = 0; i < kSpecPoints; ++i)
         {
-            const float x = freqToX (pointFreq (i)), y = filterDbToY (filterCurve.v[(size_t) i]);
-            if (i == 0) c.startNewSubPath (x, y); else c.lineTo (x, y);
+            Polyline pl { c };
+            for (int i = 0; i < kSpecPoints; ++i) pl.add (freqToX (pointFreq (i)), filterDbToY (filterCurve.v[(size_t) i]));
+            pl.finish();
         }
         juce::Path fill (c);
         fill.lineTo (plot.getRight(), mid);
@@ -486,11 +587,11 @@ void DistDisplay::paintSelectedExtras (juce::Graphics& g)
         const auto h = detectorHandlePosition (selected);
         const float bottom = plot.getBottom();
         juce::Path bell;
-        for (int i = 0; i < kSpecPoints; ++i)
         {
-            const float x = freqToX (pointFreq (i));
-            const float y = h.y + (1.0f - detCurve.v[(size_t) i]) * (bottom - h.y);
-            if (i == 0) bell.startNewSubPath (x, y); else bell.lineTo (x, y);
+            Polyline pl { bell };
+            for (int i = 0; i < kSpecPoints; ++i)
+                pl.add (freqToX (pointFreq (i)), h.y + (1.0f - detCurve.v[(size_t) i]) * (bottom - h.y));
+            pl.finish();
         }
         juce::Path fill (bell);
         fill.lineTo (plot.getRight(), bottom);
@@ -599,7 +700,16 @@ void DistDisplay::paintReadout (juce::Graphics& g)
     juce::StringArray lines;
     juce::Point<float> at;
     int colourBand = -1;
-    if (h.band >= 0 && bands[h.band].used)
+    if (h.what == Handle::Crossover)
+    {
+        const auto gp = proc.refs.readGlobal();
+        const auto tab = crossoverTab (h.band);
+        at = { tab.getCentreX(), tab.getBottom() + 30.0f };
+        lines.add (h.band == 0 ? "OTT crossover low | mid: " + formatFrequency (gp.ottLowX)
+                               : "OTT crossover mid | high: " + formatFrequency (gp.ottHighX));
+        lines.add ("drag to move, double-click: default");
+    }
+    else if (h.band >= 0 && bands[h.band].used)
     {
         const auto& p = bands[h.band];
         colourBand = h.band;
@@ -644,7 +754,7 @@ void DistDisplay::paintReadout (juce::Graphics& g)
         if (box.getY() < plot.getY() + 4.0f) box.setY (at.y + 14.0f);
         g.setColour (Colours::bg2.withAlpha (0.92f));
         g.fillRoundedRectangle (box, 5.0f);
-        g.setColour (bandColour (colourBand).withAlpha (0.7f));
+        g.setColour ((colourBand >= 0 ? bandColour (colourBand) : Colours::accent2).withAlpha (0.7f));
         g.drawRoundedRectangle (box, 5.0f, 1.0f);
         auto t = box.reduced (8.0f, 4.0f);
         for (int i = 0; i < lines.size(); ++i)
@@ -664,27 +774,57 @@ void DistDisplay::paintReadout (juce::Graphics& g)
 
 void DistDisplay::paint (juce::Graphics& g)
 {
+    const double paintStart = juce::Time::getMillisecondCounterHiRes();
+    struct Record { PaintBudget& b; double t0; ~Record() { b.record (juce::Time::getMillisecondCounterHiRes() - t0); } } record { budget, paintStart };
+    auto& pp = paintProfile;
+    double t = pp.on ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+    auto lap = [&pp, &t] (double& acc)
     {
+        if (! pp.on) return;
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        acc += now - t;
+        t = now;
+    };
+    // The background never changes between frames: draw it once, then blit it.
+    const float scale = (float) g.getInternalContext().getPhysicalPixelScaleFactor();
+    const int iw = juce::roundToInt ((float) getWidth() * scale), ih = juce::roundToInt ((float) getHeight() * scale);
+    if (! staticLayer.isValid() || staticLayer.getWidth() != iw || staticLayer.getHeight() != ih)
+    {
+        staticLayer = juce::Image (juce::Image::RGB, juce::jmax (1, iw), juce::jmax (1, ih), false);
+        juce::Graphics sg (staticLayer);
+        sg.addTransform (juce::AffineTransform::scale (scale));
         juce::ColourGradient bg (Colours::bg1, 0.0f, plot.getY(), Colours::bg0, 0.0f, plot.getBottom(), false);
-        g.setGradientFill (bg);
-        g.fillRect (getLocalBounds());
+        sg.setGradientFill (bg);
+        sg.fillRect (getLocalBounds());
+        paintGrid (sg);
     }
-    paintGrid (g);
+    g.drawImage (staticLayer, getLocalBounds().toFloat());
+    lap (pp.background);
     const auto& ui = proc.uiState;
     if ((bool) ui.getProperty ("anaPre", true))  paintSpectrum (g, pre.levels(), Colours::preSpec, 0.9f);
     if ((bool) ui.getProperty ("anaPost", true)) paintSpectrum (g, post.levels(), Colours::postSpec, 0.6f);
+    lap (pp.spectra);
 
     int solo = -1;
     for (int b = 0; b < kNumBands; ++b) if (bands[b].used && bands[b].solo) { solo = b; break; }
     paintBands (g, solo);
+    lap (pp.bands);
+    paintCrossovers (g);
     paintSelectedExtras (g);
+    lap (pp.extras);
     paintNodes (g, solo);
+    lap (pp.nodes);
     paintReadout (g);
+    lap (pp.readout);
 }
 
 // ---------------------------------------------------------------------------
 DistDisplay::Hit DistDisplay::hitTest (juce::Point<float> p) const
 {
+    // OTT crossover tabs (top of the display)
+    for (int i = 0; i < 2; ++i)
+        if (crossoverTab (i).expanded (2.0f).contains (p))
+            return { Handle::Crossover, i };
     // Handles of the selected band first: they are small and drawn on top.
     if (selected >= 0 && bands[selected].used)
     {
@@ -771,6 +911,14 @@ void DistDisplay::mouseDown (const juce::MouseEvent& e)
         selectBand (-1);
         return;
     }
+    if (h.what == Handle::Crossover)
+    {
+        const auto gp = proc.refs.readGlobal();
+        drag = h;
+        startFreq = h.band == 0 ? gp.ottLowX : gp.ottHighX;
+        beginGlobalGesture (h.band == 0 ? gpOttLowX : gpOttHighX);
+        return;
+    }
     const auto p = proc.refs.readBand (h.band);
     if (h.what == Handle::Node && e.mods.isAltDown())
     {
@@ -805,6 +953,18 @@ void DistDisplay::mouseDrag (const juce::MouseEvent& e)
 {
     mousePos = e.position;
     if (drag.what == Handle::None) return;
+    if (drag.what == Handle::Crossover)
+    {
+        const float k = e.mods.isShiftDown() ? 0.15f : 1.0f;
+        const double f = xToFreq (freqToX (startFreq) + (e.position.x - dragStart.x) * k);
+        const auto gp = proc.refs.readGlobal();
+        // keep the crossovers in their ranges and at least an octave apart
+        const double v = drag.band == 0 ? juce::jlimit (40.0, std::min (500.0, gp.ottHighX / 2.0), f)
+                                        : juce::jlimit (std::max (800.0, gp.ottLowX * 2.0), 10000.0, f);
+        if (auto* prm = proc.param (globalParamId (drag.band == 0 ? gpOttLowX : gpOttHighX)))
+            prm->setValueNotifyingHost (prm->convertTo0to1 ((float) v));
+        return;
+    }
     const int b = drag.band;
     const float k = e.mods.isShiftDown() ? 0.15f : 1.0f;
     const float dx = (e.position.x - dragStart.x) * k, dy = (e.position.y - dragStart.y) * k;
@@ -850,6 +1010,13 @@ void DistDisplay::mouseDoubleClick (const juce::MouseEvent& e)
 {
     if (e.mods.isPopupMenu()) return;
     const Hit h = hitTest (e.position);
+    if (h.what == Handle::Crossover)
+    {
+        // double-click a crossover tab: back to the classic 88 Hz / 2.5 kHz
+        proc.setParam (globalParamId (h.band == 0 ? gpOttLowX : gpOttHighX), h.band == 0 ? 88.3f : 2500.0f);
+        notifyEdit();
+        return;
+    }
     if (h.what == Handle::Node)
     {
         proc.setParam (bandParamId (h.band, bpEnabled), proc.refs.readBand (h.band).enabled ? 0.0f : 1.0f);
@@ -874,7 +1041,7 @@ void DistDisplay::createBandAt (juce::Point<float> pos, Shape shape)
 void DistDisplay::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
     const Hit h = hitTest (e.position);
-    if (h.what == Handle::None) return;
+    if (h.what == Handle::None || h.what == Handle::Crossover) return;
     float delta = w.deltaY;
     if (w.isReversed) delta = -delta;
     const double step = delta * (e.mods.isShiftDown() ? 0.4 : 2.0);
@@ -898,7 +1065,7 @@ void DistDisplay::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWh
         default:
             break;
     }
-    wheelCommit = 20;
+    wheelCommit = 0.33;
 }
 
 bool DistDisplay::keyPressed (const juce::KeyPress& key)

@@ -208,7 +208,8 @@ LookAndFeel::LookAndFeel()
 
 juce::Font LookAndFeel::font (float h, bool bold)
 {
-    return juce::Font ("Segoe UI", h, bold ? juce::Font::bold : juce::Font::plain);
+    // All text in GKDIST goes through here: one place sets the overall text size.
+    return juce::Font ("Segoe UI", h * kTextScale, bold ? juce::Font::bold : juce::Font::plain);
 }
 
 void LookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,

@@ -9,7 +9,7 @@ namespace gkd
 
 juce::StringArray shapeNames()        { return { "Bell", "Low", "High", "Full" }; }
 juce::StringArray regionSlopeNames()  { return { "12 dB/oct", "24 dB/oct", "48 dB/oct", "Brickwall" }; }
-juce::StringArray distTypeNames()     { return { "Soft Clip", "Hard Clip", "Tube", "Tape", "Transistor", "Diode", "Fuzz", "Foldback", "Rectify", "Bitcrush" }; }
+juce::StringArray distTypeNames()     { return { "Soft Clip", "Hard Clip", "Tube", "Tape", "Transistor", "Diode", "Fuzz", "Foldback", "Rectify", "Bitcrush", "Phase Dist" }; }
 juce::StringArray bandFilterNames()   { return { "Off", "Low Pass", "High Pass", "Band Pass", "Notch", "Peak", "Low Shelf", "High Shelf", "Tilt" }; }
 juce::StringArray filterSlopeNames()  { return { "12 dB/oct", "24 dB/oct", "48 dB/oct" }; }
 juce::StringArray fxTypeNames()       { return { "Off", "Phaser", "Flanger", "Chorus", "Vibrato", "Tremolo", "Auto Pan" }; }
@@ -67,7 +67,8 @@ int encodeChainOrder (const int order[kNumModules]) noexcept
 juce::StringArray noiseTypeNames()    { return { "White", "Pink", "Crackle" }; }
 juce::StringArray clipModeNames()     { return { "Off", "Soft Clip", "Hard Clip", "Limit" }; }
 juce::StringArray oversamplingNames() { return { "Off", "2x", "4x", "8x" }; }
-juce::StringArray globalSlopeNames()  { return { "12 dB/oct", "24 dB/oct" }; }
+juce::StringArray globalSlopeNames()  { return { "12 dB", "24 dB" }; }   // per octave; short for the narrow menu
+juce::StringArray compModeNames()     { return { "Standard", "OTT" }; }
 
 juce::String ID::band (int bandIndex, const char* suffix)
 {
@@ -234,6 +235,15 @@ namespace
         { ID::lfo2Div,      "LFO 2 Division",      Kind::Choice, 0, 0, 8, false, Unit::None, lfoDivNames },
         { ID::envAttack,    "Envelope Attack",     Kind::Float,  0.1f, 500.0f, 10.0f, true, Unit::Ms, noChoices },
         { ID::envRelease,   "Envelope Release",    Kind::Float,  5.0f, 3000.0f, 150.0f, true, Unit::Ms, noChoices },
+        { ID::compMode,     "Comp Mode",           Kind::Choice, 0, 0, 0, false, Unit::None, compModeNames },
+        { ID::ottDepth,     "OTT Depth",           Kind::Float,  0.0f, 100.0f, 100.0f, false, Unit::Percent, noChoices },
+        { ID::ottTime,      "OTT Time",            Kind::Float,  1.0f, 1000.0f, 100.0f, true, Unit::Percent, noChoices },
+        { ID::ottUp,        "OTT Upward",          Kind::Float,  0.0f, 100.0f, 100.0f, false, Unit::Percent, noChoices },
+        { ID::ottDown,      "OTT Downward",        Kind::Float,  0.0f, 100.0f, 100.0f, false, Unit::Percent, noChoices },
+        { ID::ottIn,        "OTT Input",           Kind::Float,  -24.0f, 24.0f, 0.0f, false, Unit::Db, noChoices },
+        { ID::ottOut,       "OTT Output",          Kind::Float,  -24.0f, 24.0f, 0.0f, false, Unit::Db, noChoices },
+        { ID::ottLowX,      "OTT Low Crossover",   Kind::Float,  40.0f, 500.0f, 88.3f, true, Unit::Hz, noChoices },
+        { ID::ottHighX,     "OTT High Crossover",  Kind::Float,  800.0f, 10000.0f, 2500.0f, true, Unit::Hz, noChoices },
     };
     static_assert (sizeof (kGlobalSpecs) / sizeof (kGlobalSpecs[0]) == kNumGlobalParams, "global spec table out of sync");
 
@@ -498,6 +508,15 @@ GlobalParams ParamRefs::readGlobal() const noexcept
     p.lfoDiv[1]    = idx (g[gpLfo2Div], kNumLfoDivs);
     p.envAttack    = clampD (g[gpEnvAttack], 0.1, 500.0);
     p.envRelease   = clampD (g[gpEnvRelease], 5.0, 3000.0);
+    p.compMode     = idx (g[gpCompMode], 2);
+    p.ottDepth     = clampD (g[gpOttDepth], 0.0, 100.0) / 100.0;
+    p.ottTime      = clampD (g[gpOttTime], 1.0, 1000.0) / 100.0;
+    p.ottUp        = clampD (g[gpOttUp], 0.0, 100.0) / 100.0;
+    p.ottDown      = clampD (g[gpOttDown], 0.0, 100.0) / 100.0;
+    p.ottInDb      = clampD (g[gpOttIn], -24.0, 24.0);
+    p.ottOutDb     = clampD (g[gpOttOut], -24.0, 24.0);
+    p.ottLowX      = clampD (g[gpOttLowX], 40.0, 500.0);
+    p.ottHighX     = clampD (g[gpOttHighX], 800.0, 10000.0);
     return p;
 }
 

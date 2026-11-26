@@ -64,6 +64,7 @@ private:
     std::vector<double> avgPow;
     int avgFrames = 0;
     bool averaging = false;
+    double idleTime = 0.0;
     uint64_t lastPos = 0;
 };
 

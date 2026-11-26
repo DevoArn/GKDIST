@@ -5,6 +5,7 @@
 #pragma once
 
 #include "Controls.h"
+#include "FrameClock.h"
 #include "../PluginProcessor.h"
 
 namespace gkd::ui
@@ -52,6 +53,7 @@ public:
 
 private:
     void timerCallback() override;
+    void frame (double dt);
     void edited();
 
     GKDistProcessor& proc;
@@ -77,6 +79,7 @@ private:
     std::array<SlotUi, kNumModSlots> slots;
 
     juce::Rectangle<int> lfoArea[2], envArea, matrixArea;
+    FrameClock clock { *this, [this] (double dt) { frame (dt); } };   // last: stops first
 };
 
 } // namespace gkd::ui

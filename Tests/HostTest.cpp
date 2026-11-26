@@ -13,6 +13,7 @@ static int failures = 0;
 #define CHECK(cond, ...) do { if (! (cond)) { ++failures; std::printf ("  FAIL: "); std::printf (__VA_ARGS__); std::printf ("\n"); } else { std::printf ("  ok: "); std::printf (__VA_ARGS__); std::printf ("\n"); } } while (0)
 
 static constexpr double kRate = 48000.0;
+static constexpr int gkdTypeCount = 11;   // distortion types (choice parameter size)
 static constexpr int kBlock = 512;
 
 static juce::AudioProcessorParameter* findParam (juce::AudioPluginInstance& p, const juce::String& name)
@@ -165,7 +166,7 @@ int main (int argc, char** argv)
     std::printf ("[5] Distortion via host parameters\n");
     {
         setNorm (*plugin, "Band 1 Shape", 1.0f);                  // Full
-        setNorm (*plugin, "Band 1 Distortion Type", 1.0f / 9.0f);  // Hard Clip
+        setNorm (*plugin, "Band 1 Distortion Type", 1.0f / (float) ((int) gkdTypeCount - 1));  // Hard Clip
         setValue (*plugin, "Band 1 Drive", 24.0);
         setNorm (*plugin, "Band 1 Used", 1.0f);
         std::vector<float> out;
@@ -217,7 +218,7 @@ int main (int argc, char** argv)
             setNorm (*plugin, pre + "Shape", shape / 3.0f);
             setValue (*plugin, pre + "Frequency", f);
             setValue (*plugin, pre + "Drive", drive);
-            setNorm (*plugin, pre + "Distortion Type", type / 9.0f);
+            setNorm (*plugin, pre + "Distortion Type", type / (float) ((int) gkdTypeCount - 1));
             setNorm (*plugin, pre + "Used", 1.0f);
         };
         setNorm (*plugin, "Band 1 Used", 0.0f);

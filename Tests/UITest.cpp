@@ -442,6 +442,97 @@ int main (int argc, char** argv)
         save (*ed, "build/ui_waveform.png");
     }
 
+    std::printf ("[refresh rates]\n");
+    {
+        // Repaint scheduling at 60 / 144 / 240 Hz for a cheap and an expensive view.
+        auto repaintsPerSecond = [] (double hz, double paintMs, double share)
+        {
+            ui::PaintBudget b (share);
+            int painted = 0;
+            for (int f = 0; f < (int) hz; ++f)
+            {
+                if (b.due (1.0 / hz)) { ++painted; b.record (paintMs); }
+            }
+            return painted;
+        };
+        const int cheap60 = repaintsPerSecond (60.0, 2.0, 0.45), cheap144 = repaintsPerSecond (144.0, 2.0, 0.45);
+        const int heavy144 = repaintsPerSecond (144.0, 9.0, 0.45), heavy240 = repaintsPerSecond (240.0, 9.0, 0.45);
+        std::printf ("  2 ms view: %d fps at 60 Hz, %d at 144 Hz;  9 ms view: %d fps at 144 Hz, %d at 240 Hz\n",
+                     cheap60, cheap144, heavy144, heavy240);
+        expect (cheap60 == 60 && cheap144 == 144, "cheap views repaint on every frame at any refresh rate");
+        expect (heavy144 * 9.0 / 1000.0 <= 0.5 && heavy240 * 9.0 / 1000.0 <= 0.5 && heavy144 >= 40,
+                "an expensive view stays within its share of the frame time");
+    }
+
+    std::printf ("[waveform speed]\n");
+    {
+        ed->setWaveformVisible (true);
+        auto& w = ed->getWaveform();
+        w.setSeconds (0.5);
+        expect (std::abs ((double) proc.uiState["waveSeconds"] - 0.5) < 1.0e-9, "waveform speed can be set");
+        const double before = w.getSeconds();
+        const auto c = w.getLocalBounds().getCentre().toFloat();
+        juce::MouseWheelDetails wd {};
+        wd.deltaY = 0.5f;
+        w.mouseWheelMove (mouseEvent (w, c, c, false, 1, juce::ModifierKeys (juce::ModifierKeys::ctrlModifier)), wd);
+        std::printf ("  Ctrl+wheel up: %.3f s -> %.3f s shown\n", before, w.getSeconds());
+        expect (w.getSeconds() < before, "Ctrl+wheel makes the waveform faster");
+        w.setSeconds (100.0);
+        expect (std::abs (w.getSeconds() - 20.0) < 1.0e-9, "waveform speed is clamped (20 s max)");
+        w.setSeconds (2.0);
+        // the view advances smoothly while audio runs
+        feed (proc, 10, rng);
+        const double h0 = w.getHead();
+        double prev = h0;
+        bool monotonic = true;
+        for (int i = 0; i < 10; ++i)
+        {
+            feed (proc, 2, rng);
+            w.pullNow();
+            monotonic = monotonic && w.getHead() >= prev;
+            prev = w.getHead();
+        }
+        std::printf ("  scroll position advanced %.0f columns over 10 frames (monotonic: %s)\n", prev - h0, monotonic ? "yes" : "NO");
+        expect (monotonic && prev > h0, "waveform scrolls forward continuously");
+    }
+
+    std::printf ("[OTT compressor]\n");
+    {
+        auto& d = ed->getDisplay();
+        proc.setParam (globalParamId (gpCompOn), 1.0f);
+        proc.setParam (globalParamId (gpCompMode), 1.0f);
+        feed (proc, 30, rng);
+        const auto tab0 = d.crossoverTab (0), tab1 = d.crossoverTab (1);
+        expect (! tab0.isEmpty() && ! tab1.isEmpty(), "OTT crossover tabs are shown on the display");
+        dragOn (d, tab0.getCentre(), { d.freqToX (150.0), tab0.getCentreY() });
+        dragOn (d, tab1.getCentre(), { d.freqToX (4000.0), tab1.getCentreY() });
+        const auto g = proc.refs.readGlobal();
+        std::printf ("  dragged crossovers: %.1f Hz, %.0f Hz (expected 150, 4000)\n", g.ottLowX, g.ottHighX);
+        expect (std::abs (g.ottLowX / 150.0 - 1.0) < 0.02 && std::abs (g.ottHighX / 4000.0 - 1.0) < 0.02,
+                "dragging the tabs sets the OTT crossovers");
+        feed (proc, 60, rng);
+        const float g0 = proc.getOttBandGain (0), g1 = proc.getOttBandGain (1), g2 = proc.getOttBandGain (2);
+        std::printf ("  live OTT band gains: low %+.1f, mid %+.1f, high %+.1f dB\n", g0, g1, g2);
+        expect (std::isfinite (g0) && std::isfinite (g1) && std::isfinite (g2) && (g0 != 0.0f || g1 != 0.0f || g2 != 0.0f),
+                "OTT band gains reach the meter");
+        save (*ed, "build/ui_ott.png");
+        proc.setParam (globalParamId (gpCompMode), 0.0f);
+        feed (proc, 10, rng);
+        expect (d.crossoverTab (0).isEmpty(), "crossover tabs disappear in standard mode");
+        proc.setParam (globalParamId (gpCompOn), 0.0f);
+    }
+
+    std::printf ("[phase distortion]\n");
+    {
+        ed->getDisplay().selectBand (b2);
+        ed->getBandPanel().showModule (Module::Distortion);
+        proc.setParam (bandParamId (b2, bpType), (float) (int) DistType::PhaseDist);
+        proc.setParam (bandParamId (b2, bpDrive), 30.0f);
+        feed (proc, 30, rng);
+        expect (proc.refs.readBand (b2).type == DistType::PhaseDist, "phase distortion can be selected");
+        save (*ed, "build/ui_phasedist.png");
+    }
+
     std::printf ("[colour themes]\n");
     {
         const int sel = ed->getDisplay().getSelectedBand();
@@ -468,6 +559,29 @@ int main (int argc, char** argv)
     feed (proc, 60, rng);
     save (*ed, "build/ui_large.png");
 
+    {
+        // Per-frame paint cost of the animated views (software renderer, the slowest path).
+        ed->setWaveformVisible (true);
+        feed (proc, 20, rng);
+        auto timePaint = [] (juce::Component& c) -> double
+        {
+            juce::Image img (juce::Image::ARGB, juce::jmax (1, c.getWidth()), juce::jmax (1, c.getHeight()), true);
+            const double t0 = juce::Time::getMillisecondCounterHiRes();
+            for (int i = 0; i < 20; ++i) { juce::Graphics g (img); c.paintEntireComponent (g, true); }
+            return (juce::Time::getMillisecondCounterHiRes() - t0) / 20.0;
+        };
+        auto& disp = ed->getDisplay();
+        disp.paintProfile = {};
+        disp.paintProfile.on = true;
+        const double dMs = timePaint (disp), wMs = timePaint (ed->getWaveform());
+        const auto& pp = disp.paintProfile;
+        std::printf ("  display stages (ms/frame): background %.2f, spectra %.2f, bands %.2f, handles %.2f, nodes %.2f, read-out %.2f\n",
+                     pp.background / 20.0, pp.spectra / 20.0, pp.bands / 20.0, pp.extras / 20.0, pp.nodes / 20.0, pp.readout / 20.0);
+        std::printf ("    bands: mixed fill %.2f, clashes %.2f, outlines %.2f\n", pp.mixFill / 20.0, pp.clash / 20.0, pp.outlines / 20.0);
+        disp.paintProfile.on = false;
+        std::printf ("  per frame at 1600x1040: spectrum display %.1f ms, waveform %.1f ms (software)\n", dMs, wMs);
+        ed->setWaveformVisible (false);
+    }
     {
         juce::Image img (juce::Image::ARGB, ed->getWidth(), ed->getHeight(), true);
         const double t0 = juce::Time::getMillisecondCounterHiRes();

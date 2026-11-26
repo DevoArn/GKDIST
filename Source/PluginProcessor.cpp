@@ -24,6 +24,7 @@ GKDistProcessor::GKDistProcessor()
     for (auto& v : lfoPhase) v.store (0.0f);
     for (auto& v : envValue) v.store (0.0f);
     for (auto& v : modSlotValue) v.store (0.0f);
+    for (auto& v : ottGain) v.store (0.0f);
 }
 
 GKDistProcessor::~GKDistProcessor() = default;
@@ -69,7 +70,7 @@ void GKDistProcessor::initUIDefaults()
     clampInt ("height", 800, 1600, 900);
     clampInt ("lowerTab", 0, 2, 0);
     setDefault ("wave", false);
-    clampInt ("waveSpan", 0, 3, 1);
+    uiState.setProperty ("waveSeconds", juce::jlimit (0.25, 20.0, number ("waveSeconds", 2.0)), nullptr);
     clampInt ("waveZoom", 0, 3, 0);
     clampInt ("bandModule", 0, kNumModules - 1, (int) Module::Distortion);
 }
@@ -295,6 +296,7 @@ void GKDistProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     outPeakDb.store ((float) dsp::linToDb (peak));
     globalCompGr.store ((float) engines[activeOs].globalCompGainReduction());
     limiterGr.store ((float) engines[activeOs].limiterGainReduction());
+    for (int b = 0; b < 3; ++b) ottGain[(size_t) b].store ((float) engines[activeOs].ottBandGainDb (b), std::memory_order_relaxed);
     for (int b = 0; b < kNumBands; ++b)
     {
         dynAmount[(size_t) b].store (dynRT[b], std::memory_order_relaxed);
@@ -308,6 +310,10 @@ void GKDistProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         t.q.store (r.q, std::memory_order_relaxed);
         t.levelDb.store (r.levelDb, std::memory_order_relaxed);
         t.detDb.store (r.detDb, std::memory_order_relaxed);
+        t.bias.store (r.bias, std::memory_order_relaxed);
+        t.filterFreq.store (r.filterFreq, std::memory_order_relaxed);
+        t.filterRes.store (r.filterRes, std::memory_order_relaxed);
+        t.filterGainDb.store (r.filterGainDb, std::memory_order_relaxed);
     }
     for (int l = 0; l < 2; ++l)
     {
@@ -343,6 +349,10 @@ dsp::BandTelemetry GKDistProcessor::getTelemetry (int band) const noexcept
     r.q = t.q.load (std::memory_order_relaxed);
     r.levelDb = t.levelDb.load (std::memory_order_relaxed);
     r.detDb = t.detDb.load (std::memory_order_relaxed);
+    r.bias = t.bias.load (std::memory_order_relaxed);
+    r.filterFreq = t.filterFreq.load (std::memory_order_relaxed);
+    r.filterRes = t.filterRes.load (std::memory_order_relaxed);
+    r.filterGainDb = t.filterGainDb.load (std::memory_order_relaxed);
     return r;
 }
 

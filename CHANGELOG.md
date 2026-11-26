@@ -22,7 +22,14 @@ First public release.
   side-chain envelope followers, 8-slot matrix to any band parameter.
 - Visual feedback: band colours saturate with intensity, live glow, colour
   mixing where bands overlap, clash marking between competing bands.
-- Waveform view: the output coloured by the bands that change it.
+- Waveform view: the output coloured by the bands that change it, adjustable
+  speed (0.25 – 20 s), smooth scrolling.
+- Phase Dist distortion type (the band modulates its own phase).
+- OTT mode for the bus compressor: 3-band upward + downward compression with
+  depth, time, up, down, in / out and draggable crossovers.
+- Animation synced to the display refresh rate (60 Hz and above), time-based,
+  with a per-view paint budget; curves follow dynamics and modulation.
+- Larger text throughout.
 - Colour themes: Ember (default), Sunset, Vintage (warm) and Midnight (cool).
 - Global section: oversampling Off / 2x / 4x / 8x, high-/low-pass, bus
   compressor, noise, clipper, 1 ms look-ahead brick-wall limiter, dry/wet

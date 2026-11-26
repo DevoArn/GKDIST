@@ -34,6 +34,8 @@ struct BandTelemetry
     float q = 1.0f;            // effective region Q
     float levelDb = -100.0f;   // band output peak (with ~300 ms decay)
     float detDb = -100.0f;     // dynamics detector level (-100 when dynamics are off)
+    float bias = 0.0f;         // effective bias (with modulation)
+    float filterFreq = 5000.0f, filterRes = 0.707f, filterGainDb = 0.0f;   // effective band filter
 };
 
 /** One band: takes its region of the signal (bell / low / high / full),
@@ -111,6 +113,7 @@ private:
     double rDrive = 1, rBias = 0, rAuto = 1, rWet = 1, rGain = 1, rPhat = 0, rNoise = 0, rPanL = 1, rPanR = 1;
     double tDrive = 1, tBias = 0, tAuto = 1, tWet = 1, tGain = 1, tPhat = 0, tNoise = 0, tPanL = 1, tPanR = 1;
     double fade = 0.0, fadeTarget = 0.0, fadeStep = 0.001;
+    double rPdDepth = 0, tPdDepth = 0, rPdTone = 0.1, tPdTone = 0.1;   // phase distortion
     double crushBitsNow = 16.0;
     int crushHoldNow = 1;
 
@@ -123,6 +126,7 @@ private:
     Phat phat;
     NoiseGen noise[2];
     BandFx fx;
+    PhaseDistorter pd;
     Compressor comp;
     Clipper clipper;
     EnvelopeDetector det;
@@ -131,7 +135,7 @@ private:
     double crushHeld[2] {};
 
     // Telemetry
-    double effDriveDb = 0, effWet = 0, effGainDb = 0, detLevelDb = -100.0;
+    double effDriveDb = 0, effWet = 0, effGainDb = 0, effBias = 0, detLevelDb = -100.0;
     double levelEnv = 0.0, levelDecay = 0.9999;
     double effectAcc = 0.0;
     int effectCount = 0;

@@ -79,6 +79,7 @@ inline double shapeCurve (DistType t, double u) noexcept
             return fastTanh (std::abs (u));
 
         case DistType::Bitcrush:          // quantised in the band processor; same +-1 domain
+        case DistType::PhaseDist:         // phase-modulated in the band processor (PhaseDistorter)
         case DistType::Count:
         default:
             return u < -1.0 ? -1.0 : (u > 1.0 ? 1.0 : u);
@@ -117,7 +118,7 @@ inline double crushQuantise (double x, double bits) noexcept
     than the loudness. */
 inline double autoGainFactor (DistType t, double driveDb, double bias) noexcept
 {
-    if (t == DistType::Bitcrush) return 1.0;
+    if (t == DistType::Bitcrush || t == DistType::PhaseDist) return 1.0;   // level-neutral types
     constexpr int N = 32;
     constexpr double amp = 0.125;                       // -18 dBFS peak
     const double drive = std::pow (10.0, driveDb / 20.0);

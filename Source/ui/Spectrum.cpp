@@ -72,9 +72,13 @@ bool SpectrumAnalyzer::process (const SnapshotBuffer& src, double dt, int speed,
     const uint64_t pos = src.position();
     if (pos == lastPos)
     {
-        decay (dt, speed);
+        // At high display refresh rates many frames fall between two audio
+        // blocks: hold the picture, and only decay once audio stopped arriving.
+        idleTime += dt;
+        if (idleTime > 0.06) decay (dt, speed);
         return false;
     }
+    idleTime = 0.0;
     lastPos = pos;
     src.read (in.data(), N);
     compute (in.data(), dt, speed, tilt);

@@ -6,6 +6,7 @@
 
 #include "Controls.h"
 #include "ChainStrip.h"
+#include "FrameClock.h"
 #include "../PluginProcessor.h"
 
 namespace gkd::ui
@@ -17,7 +18,7 @@ class BandChips : public juce::Component, public juce::TooltipClient
 public:
     explicit BandChips (GKDistProcessor& p) : proc (p) {}
     void setSelected (int b) { if (b != selected) { selected = b; repaint(); } }
-    void tick();
+    void tick (double dt = 1.0);
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent& e) override { hover = chipAt (e.position.x); }
@@ -62,6 +63,7 @@ public:
 
 private:
     void timerCallback() override;
+    void frame (double dt);   // every display frame: meters, chips, live curves
     void refresh();
     void edited();
     void layoutModulePage();
@@ -93,6 +95,11 @@ private:
 
     std::array<std::vector<juce::Component*>, kNumModules> pageControls;
     juce::Rectangle<int> secRegion, secOut, secChain, secDyn, pageArea;
+
+    // live values of the selected band (curves move with dynamics and modulation)
+    float liveDrive = 0, liveBias = 0, liveFiltLogF = 0, liveFiltLogR = 0, liveFiltGain = 0;
+    int liveBand = -1;
+    FrameClock clock { *this, [this] (double dt) { frame (dt); } };   // last: stops first
 };
 
 } // namespace gkd::ui

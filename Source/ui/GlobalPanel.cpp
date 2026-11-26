@@ -21,8 +21,28 @@ GlobalPanel::GlobalPanel (GKDistProcessor& p) : proc (p)
              &hpFreq, &lpFreq, &cThresh, &cRatio, &cAttack, &cRelease, &cMakeup, &noise, &clipCeil, &limCeil, &limRel,
              &mix, &out, &compMeter, &limitMeter })
         addAndMakeVisible (c);
+    for (auto* c : std::initializer_list<juce::Component*> { &ottBtn, &ottDepth, &ottTime, &ottUp, &ottDown, &ottIn, &ottOut, &ottMeter })
+        addChildComponent (c);
+    ottBtn.setVisible (true);
 
     auto g = [this] (int idx) { return proc.param (globalParamId (idx)); };
+    ottBtn.attach (g (gpCompMode));
+    ottDepth.attach (g (gpOttDepth)); ottTime.attach (g (gpOttTime)); ottUp.attach (g (gpOttUp));
+    ottDown.attach (g (gpOttDown)); ottIn.attach (g (gpOttIn)); ottOut.attach (g (gpOttOut));
+    for (auto* k : { &ottDepth, &ottTime, &ottUp, &ottDown, &ottIn, &ottOut })
+    {
+        k->setCompact();
+        k->onEdit = [this] { edited(); };
+    }
+    ottBtn.onEdit = [this] { edited(); };
+    ottBtn.setTooltip ("OTT: 3-band upward + downward compression (crossovers: drag the tabs at the top of the display)");
+    ottDepth.slider.setTooltip ("OTT depth: dry / wet of the 3-band compression");
+    ottTime.slider.setTooltip ("OTT time: scales attack and release (100 % = the classic times)");
+    ottUp.slider.setTooltip ("Upward compression: lifts quiet parts");
+    ottDown.slider.setTooltip ("Downward compression: pushes loud parts down");
+    ottIn.slider.setTooltip ("Input gain into the OTT (more = more compression)");
+    ottOut.slider.setTooltip ("Output gain after the OTT");
+    ottMeter.setTooltip ("OTT band gains: low / mid / high (right = lifted, left = pushed down)");
     osBox.attach (g (gpOversampling)); slopeBox.attach (g (gpFiltSlope)); noiseTypeBox.attach (g (gpNoiseType));
     hpBtn.attach (g (gpHpOn)); lpBtn.attach (g (gpLpOn)); compBtn.attach (g (gpCompOn)); clipBtn.attach (g (gpClipOn));
     softBtn.attach (g (gpClipSoft)); limitBtn.attach (g (gpLimitOn)); bypassBtn.attach (g (gpBypass));
@@ -60,12 +80,67 @@ void GlobalPanel::timerCallback()
     lpFreq.setEnabled (gp.lpOn);
     slopeBox.setEnabled (gp.hpOn || gp.lpOn);
     for (auto* k : { &cThresh, &cRatio, &cAttack, &cRelease, &cMakeup }) k->setEnabled (gp.compOn);
+    for (auto* k : { &ottDepth, &ottTime, &ottUp, &ottDown, &ottIn, &ottOut }) k->setEnabled (gp.compOn);
+    if ((gp.compMode == 1) != ottShown) showOtt (gp.compMode == 1);
     noiseTypeBox.setEnabled (gp.noiseDb > kNoiseOffDb + 0.05);
     clipCeil.setEnabled (gp.clipOn);
     softBtn.setEnabled (gp.clipOn);
     limCeil.setEnabled (gp.limitOn);
     limRel.setEnabled (gp.limitOn);
-    const float cg = proc.getGlobalCompGr(), lg = gp.limitOn ? proc.getLimiterGr() : 0.0f;
+}
+
+void GlobalPanel::showOtt (bool on)
+{
+    ottShown = on;
+    for (auto* c : std::initializer_list<juce::Component*> { &cThresh, &cRatio, &cAttack, &cRelease, &cMakeup, &compMeter })
+        c->setVisible (! on);
+    for (auto* c : std::initializer_list<juce::Component*> { &ottDepth, &ottTime, &ottUp, &ottDown, &ottIn, &ottOut, &ottMeter })
+        c->setVisible (on);
+    repaint();
+}
+
+void OttMeter::setValues (float lowDb, float midDb, float highDb)
+{
+    const float n[3] { lowDb, midDb, highDb };
+    bool changed = false;
+    for (int i = 0; i < 3; ++i)
+    {
+        const float x = juce::jlimit (-24.0f, 24.0f, std::isfinite (n[i]) ? n[i] : 0.0f);
+        changed = changed || std::abs (x - v[i]) > 0.05f;
+        v[i] = x;
+    }
+    if (changed) repaint();
+}
+
+void OttMeter::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    g.setColour (Colours::bg0);
+    g.fillRoundedRectangle (r, 3.0f);
+    const float rowH = r.getHeight() / 3.0f, cx = r.getX() + 12.0f + 0.5f * (r.getWidth() - 12.0f);
+    const float half = 0.5f * (r.getWidth() - 14.0f);
+    g.setFont (LookAndFeel::font (8.0f, true));
+    const char* names[] = { "L", "M", "H" };
+    for (int i = 0; i < 3; ++i)
+    {
+        const auto row = juce::Rectangle<float> (r.getX(), r.getY() + rowH * (float) i, r.getWidth(), rowH);
+        g.setColour (Colours::textDim);
+        g.drawText (names[i], row.withWidth (11.0f), juce::Justification::centred);
+        const float w = v[i] / 24.0f * half;
+        g.setColour (v[i] >= 0.0f ? Colours::on : Colours::collision);
+        if (w >= 0.0f) g.fillRect (cx, row.getY() + 1.0f, w, rowH - 2.0f);
+        else           g.fillRect (cx + w, row.getY() + 1.0f, -w, rowH - 2.0f);
+    }
+    g.setColour (Colours::textDim.withAlpha (0.6f));
+    g.drawVerticalLine ((int) cx, r.getY(), r.getBottom());
+}
+
+void GlobalPanel::frame (double)
+{
+    if (ottShown)
+        ottMeter.setValues (proc.getOttBandGain (0), proc.getOttBandGain (1), proc.getOttBandGain (2));
+    const bool limitOn = proc.refs.readGlobal().limitOn;
+    const float cg = proc.getGlobalCompGr(), lg = limitOn ? proc.getLimiterGr() : 0.0f;
     compMeter.setValue (cg / 24.0f, "GR " + juce::String (cg, 1) + " dB");
     limitMeter.setColour (Colours::collision);
     limitMeter.setValue (lg / 12.0f, "GR " + juce::String (lg, 1) + " dB");
@@ -116,7 +191,16 @@ void GlobalPanel::resized()
 
     auto s = inner (sections[secOs]);     column (s, kColW + 14, { &osBox });
     s = inner (sections[secFilter]);      column (s, kColW, { &hpBtn, &lpBtn, &slopeBox }); knobs (s, { &hpFreq, &lpFreq });
-    s = inner (sections[secComp]);        column (s, kColW, { &compBtn, &compMeter }); knobs (s, { &cThresh, &cRatio, &cAttack, &cRelease, &cMakeup });
+    s = inner (sections[secComp]);
+    {
+        column (s, kColW, { &compBtn, &ottBtn, &compMeter });
+        ottMeter.setBounds (compMeter.getBounds().withY (compMeter.getY() - 2).withHeight (24));
+        auto o = s;
+        knobs (s, { &cThresh, &cRatio, &cAttack, &cRelease, &cMakeup });
+        const int w = (5 * kKnobW) / 6;   // OTT: six knobs in the same space
+        for (auto* k : { &ottDepth, &ottTime, &ottUp, &ottDown, &ottIn, &ottOut })
+            k->setBounds (o.removeFromLeft (w).withHeight (kKnobH));
+    }
     s = inner (sections[secNoise]);       column (s, kColW + 10, { &noiseTypeBox }); knobs (s, { &noise });
     s = inner (sections[secClip]);        column (s, kColW, { &clipBtn, &softBtn }); knobs (s, { &clipCeil });
     s = inner (sections[secLimit]);       column (s, kColW, { &limitBtn, &limitMeter }); knobs (s, { &limCeil, &limRel });

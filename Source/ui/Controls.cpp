@@ -13,7 +13,7 @@ namespace gkd::ui
 Knob::Knob (const juce::String& c) : caption (c)
 {
     slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 74, 16);
+    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 18);
     slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.2f, juce::MathConstants<float>::pi * 2.8f, true);
     slider.setColour (juce::Slider::rotarySliderFillColourId, Colours::accent);
     slider.setMouseDragSensitivity (220);
@@ -38,14 +38,14 @@ void Knob::setCompact()
 {
     compact = true;
     slider.getProperties().set ("compact", true);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 13);
+    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 64, 14);
     resized();
 }
 
 void Knob::resized()
 {
     auto r = getLocalBounds();
-    r.removeFromTop (compact ? 11 : 13);
+    r.removeFromTop (compact ? 12 : 15);
     slider.setBounds (r);
 }
 
@@ -53,7 +53,7 @@ void Knob::paint (juce::Graphics& g)
 {
     g.setColour (isEnabled() ? Colours::textDim : Colours::textDim.withAlpha (0.4f));
     g.setFont (LookAndFeel::font (compact ? 9.5f : 10.5f, true));
-    g.drawText (caption, getLocalBounds().removeFromTop (compact ? 11 : 13), juce::Justification::centred);
+    g.drawFittedText (caption, getLocalBounds().removeFromTop (compact ? 12 : 15), juce::Justification::centred, 1, 0.75f);
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +105,36 @@ void TransferCurve::paint (juce::Graphics& g)
     g.drawLine (r.getCentreX(), r.getY(), r.getCentreX(), r.getBottom());
     g.drawLine (r.getX(), r.getCentreY(), r.getRight(), r.getCentreY());
     g.setColour (Colours::gridStrong);
-    g.drawLine (r.getX(), r.getBottom(), r.getRight(), r.getY(), 0.8f);   // unity
+    if (type != DistType::PhaseDist)
+        g.drawLine (r.getX(), r.getBottom(), r.getRight(), r.getY(), 0.8f);   // unity
+
+    if (type == DistType::PhaseDist)
+    {
+        // Phase distortion is not a level curve: show one cycle of a sine (grey)
+        // and what the phase warp does to it (same model as the PhaseDistorter,
+        // for a 110 Hz tone).
+        const double t01 = juce::jlimit (0.0, 1.0, driveDb / 48.0);
+        const double depthCycles = t01 * t01 * 0.004 * 110.0;
+        juce::Path ref, warped;
+        const int steps = juce::jmax (48, (int) r.getWidth());
+        for (int i = 0; i <= steps; ++i)
+        {
+            const double ph = (double) i / steps;
+            const double s = std::sin (6.283185307179586 * ph);
+            const double m = std::tanh (2.0 * 0.8 * std::sin (6.283185307179586 * ph - 0.3 * (1.0 + bias)));
+            const double w = std::sin (6.283185307179586 * (ph - depthCycles * (1.0 + m)));
+            const float px = r.getX() + (float) ph * r.getWidth();
+            const float y0 = r.getCentreY() - (float) (s / 1.1) * r.getHeight() * 0.5f;
+            const float y1 = r.getCentreY() - (float) (w / 1.1) * r.getHeight() * 0.5f;
+            if (i == 0) { ref.startNewSubPath (px, y0); warped.startNewSubPath (px, y1); }
+            else        { ref.lineTo (px, y0); warped.lineTo (px, y1); }
+        }
+        g.setColour (Colours::textDim.withAlpha (0.5f));
+        g.strokePath (ref, juce::PathStrokeType (1.0f));
+        g.setColour (colour);
+        g.strokePath (warped, juce::PathStrokeType (1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        return;
+    }
 
     // The curve shows the shape over an input of -1..+1, scaled so its peak
     // fills the box (auto gain only changes the level, not the shape).

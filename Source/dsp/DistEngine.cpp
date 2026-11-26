@@ -21,6 +21,7 @@ void DistEngine::prepare (double newHostRate, int maxBlockSize, int numChannels,
     for (int b = 0; b < kNumBands; ++b)
         bands[b].prepare (hostRate, osFactor, b);
     gComp.prepare (osRate);
+    ott.prepare (osRate);
     gNoise[0].prepare (osRate, 0xabcdef01u);
     gNoise[1].prepare (osRate, 0x10fedcbau);
     limiter.prepare (hostRate, channels, lookaheadFor (hostRate));
@@ -41,6 +42,7 @@ void DistEngine::reset()
     hp.clear();
     lp.clear();
     gComp.reset();
+    ott.reset();
     gNoise[0].reset();
     gNoise[1].reset();
     limiter.reset();
@@ -79,6 +81,9 @@ void DistEngine::updateGlobal (const GlobalParams& g, int hostCount)
         hpMix = g.hpOn ? 1.0 : 0.0;
         lpMix = g.lpOn ? 1.0 : 0.0;
         compMix = g.compOn ? 1.0 : 0.0;
+        compModeNow = g.compMode;
+        sOttLowX = std::log (g.ottLowX);
+        sOttHighX = std::log (g.ottHighX);
         clipMix = g.clipOn ? 1.0 : 0.0;
         noiseLvl = g.noiseDb > kNoiseOffDb + 0.05 ? dbToLin (g.noiseDb) : 0.0;
         mixNow = g.mix;
@@ -95,11 +100,28 @@ void DistEngine::updateGlobal (const GlobalParams& g, int hostCount)
         if (std::abs (sLp - std::log (g.lpFreq)) < 1.0e-5) sLp = std::log (g.lpFreq);
         filtSlope = g.filtSlope;
         designGlobalFilters (false);
+        sOttLowX += alpha * (std::log (g.ottLowX) - sOttLowX);
+        sOttHighX += alpha * (std::log (g.ottHighX) - sOttHighX);
     }
 
     hpMixT = g.hpOn ? 1.0 : 0.0;
     lpMixT = g.lpOn ? 1.0 : 0.0;
-    compMixT = g.compOn ? 1.0 : 0.0;
+    // Switching between standard and OTT: fade the compressor out, switch, fade back in.
+    compMixT = g.compOn && g.compMode == compModeNow ? 1.0 : 0.0;
+    if (g.compMode != compModeNow && compMix <= 0.0)
+    {
+        compModeNow = g.compMode;
+        gComp.reset();
+        ott.reset();
+        compMixT = g.compOn ? 1.0 : 0.0;
+    }
+    {
+        OttCompressor::Settings st;
+        st.lowX = std::exp (sOttLowX); st.highX = std::exp (sOttHighX);
+        st.depth = g.ottDepth; st.time = g.ottTime; st.up = g.ottUp; st.down = g.ottDown;
+        st.inDb = g.ottInDb; st.outDb = g.ottOutDb;
+        ott.set (st);
+    }
     clipMixT = g.clipOn ? 1.0 : 0.0;
     noiseLvlT = g.noiseDb > kNoiseOffDb + 0.05 ? dbToLin (g.noiseDb) : 0.0;
     gCompOnNow = g.compOn || compMix > 0.0;
@@ -257,7 +279,8 @@ void DistEngine::process (float* const* io, int numChannels, int numSamples, con
         {
             std::memcpy (tmpL, xL, sizeof (double) * (size_t) on);
             std::memcpy (tmpR, xR, sizeof (double) * (size_t) on);
-            gComp.process (tmpL, tmpR, on, stereo);
+            if (compModeNow == 1) ott.process (tmpL, tmpR, on, stereo);
+            else                  gComp.process (tmpL, tmpR, on, stereo);
             const double dm = (compMixT - compMix) * inv;
             for (int i = 0; i < on; ++i)
             {
@@ -266,7 +289,7 @@ void DistEngine::process (float* const* io, int numChannels, int numSamples, con
                 xR[i] += m * (tmpR[i] - xR[i]);
             }
             compMix = compMixT;
-            if (compMix <= 0.0) gComp.reset();
+            if (compMix <= 0.0) { gComp.reset(); ott.reset(); }
         }
 
         if (noiseLvl > 0.0 || noiseLvlT > 0.0)

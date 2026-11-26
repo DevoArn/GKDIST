@@ -89,7 +89,8 @@ juce::String ChainStrip::moduleSummary (Module m, const BandParams& p)
         }
         case Module::Distortion:
         {
-            static const char* s[] = { "Soft", "Hard", "Tube", "Tape", "Trans", "Diode", "Fuzz", "Fold", "Rect", "Crush" };
+            static const char* s[] = { "Soft", "Hard", "Tube", "Tape", "Trans", "Diode", "Fuzz", "Fold", "Rect", "Crush", "Phase" };
+            static_assert (sizeof (s) / sizeof (s[0]) == (size_t) DistType::Count, "summary names out of sync");
             return juce::String (s[(int) p.type]) + " " + formatNumber (p.driveDb, 0) + " dB";
         }
         case Module::Phat:       return formatNumber (p.phat * 100.0, 0) + " %";

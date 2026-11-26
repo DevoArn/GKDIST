@@ -63,6 +63,8 @@ public:
     float  getCompGr (int band) const noexcept     { return compGr[(size_t) band].load (std::memory_order_relaxed); }
     float  getGlobalCompGr() const noexcept        { return globalCompGr.load(); }
     float  getLimiterGr() const noexcept           { return limiterGr.load(); }
+    /** OTT mode: gain of band 0..2 in dB (+ boost, - cut). */
+    float  getOttBandGain (int b) const noexcept   { return ottGain[(size_t) juce::jlimit (0, 2, b)].load (std::memory_order_relaxed); }
     float  getOutputPeakDb() const noexcept        { return outPeakDb.load(); }
     int    getActiveLatency() const noexcept       { return activeLatency.load(); }
     bool   isSidechainActive() const noexcept      { return sidechainActive.load(); }
@@ -78,6 +80,7 @@ public:
     {
         std::vector<dsp::WaveColumn> columns;
         int writePos = 0, count = 0;
+        long long total = 0;   // columns received since the history was (re)started
         double rate = 0.0;
     };
     WaveHistory waveHistory;
@@ -126,7 +129,8 @@ private:
     struct AtomicTelemetry
     {
         std::atomic<float> driveDb { 0.0f }, wet { 0.0f }, gainDb { 0.0f }, freq { 1000.0f }, q { 1.0f },
-                           levelDb { -100.0f }, detDb { -100.0f };
+                           levelDb { -100.0f }, detDb { -100.0f }, bias { 0.0f },
+                           filterFreq { 5000.0f }, filterRes { 0.707f }, filterGainDb { 0.0f };
     };
     std::array<AtomicTelemetry, kNumBands> telemetry;
     std::array<std::atomic<float>, 2> lfoValue {}, lfoPhase {}, envValue {};
@@ -149,6 +153,7 @@ private:
     std::vector<dsp::WaveColumn> waveFifoData, waveBlock;
     std::atomic<int>    activeLatency { 0 };
     std::atomic<float>  globalCompGr { 0.0f }, limiterGr { 0.0f }, outPeakDb { -100.0f };
+    std::array<std::atomic<float>, 3> ottGain {};
 
     std::vector<juce::ValueTree> undoStack, redoStack;
     juce::ValueTree undoBaseline;

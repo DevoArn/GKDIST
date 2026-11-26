@@ -16,7 +16,7 @@ constexpr int kNumBands = 24;
 
 /** Which part of the spectrum a band takes from the signal. */
 enum class Shape : int { Bell = 0, Low, High, Full, Count };
-enum class DistType : int { SoftClip = 0, HardClip, Tube, Tape, Transistor, Diode, Fuzz, Foldback, Rectify, Bitcrush, Count };
+enum class DistType : int { SoftClip = 0, HardClip, Tube, Tape, Transistor, Diode, Fuzz, Foldback, Rectify, Bitcrush, PhaseDist, Count };
 enum class BandFilter : int { Off = 0, LowPass, HighPass, BandPass, Notch, Peak, LowShelf, HighShelf, Tilt, Count };
 enum class FxType : int { Off = 0, Phaser, Flanger, Chorus, Vibrato, Tremolo, AutoPan, Count };
 enum class DetMode : int { Region = 0, Bell, Count };
@@ -89,6 +89,7 @@ juce::StringArray noiseTypeNames();
 juce::StringArray clipModeNames();
 juce::StringArray oversamplingNames();
 juce::StringArray globalSlopeNames();
+juce::StringArray compModeNames();      // "Standard", "OTT" (3-band upward + downward)
 
 namespace ID
 {
@@ -180,6 +181,15 @@ namespace ID
     inline constexpr const char* lfo2Div = "lfo2_div";
     inline constexpr const char* envAttack = "env_atk";
     inline constexpr const char* envRelease = "env_rel";
+    inline constexpr const char* compMode = "g_cmode";
+    inline constexpr const char* ottDepth = "g_ott_depth";
+    inline constexpr const char* ottTime = "g_ott_time";
+    inline constexpr const char* ottUp = "g_ott_up";
+    inline constexpr const char* ottDown = "g_ott_down";
+    inline constexpr const char* ottIn = "g_ott_in";
+    inline constexpr const char* ottOut = "g_ott_out";
+    inline constexpr const char* ottLowX = "g_ott_xlo";
+    inline constexpr const char* ottHighX = "g_ott_xhi";
 
     // modulation slots ("m1_src" ...)
     inline constexpr const char* modSource = "src";
@@ -208,6 +218,7 @@ enum GlobalParamIndex
     gpLimitOn, gpLimitCeiling, gpLimitRelease, gpMix, gpOutGain, gpBypass,
     gpLfo1Rate, gpLfo1Shape, gpLfo1Sync, gpLfo1Div, gpLfo2Rate, gpLfo2Shape, gpLfo2Sync, gpLfo2Div,
     gpEnvAttack, gpEnvRelease,
+    gpCompMode, gpOttDepth, gpOttTime, gpOttUp, gpOttDown, gpOttIn, gpOttOut, gpOttLowX, gpOttHighX,
     kNumGlobalParams
 };
 
@@ -279,6 +290,9 @@ struct GlobalParams
     bool   lfoSync[2] { false, false };
     int    lfoDiv[2] { 6, 8 };
     double envAttack = 10.0, envRelease = 150.0;   // ms
+    int    compMode = 0;                   // 0 = standard, 1 = OTT 3-band up / down
+    double ottDepth = 1.0, ottTime = 1.0, ottUp = 1.0, ottDown = 1.0;   // 0..1, time scale
+    double ottInDb = 0.0, ottOutDb = 0.0, ottLowX = 88.3, ottHighX = 2500.0;
 };
 
 struct ModSlot
