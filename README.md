@@ -33,6 +33,7 @@ commercial product.
 | `C:\Program Files\GKDIST\` | Standalone app, uninstaller, licence and notices |
 | Start Menu → *GKDIST* | Shortcuts to the app and the uninstaller |
 | `Documents\GKDIST\Presets` | Your presets (created on first save, kept on uninstall unless you tick the option) |
+| `%APPDATA%\GKDIST\GKDIST.settings` | Your colour theme (shared by all instances) |
 
 Uninstall from *Settings → Apps → Installed apps → GKDIST* or the Start Menu.
 The installer can run while a DAW is open: a plug-in file the host has loaded
@@ -80,8 +81,9 @@ is the frequency, height is the drive. Each band processes a *region* of the
 spectrum and puts the result back, so a band with 0 % wet and 0 dB gain is
 fully transparent, and bands can overlap and run in series.
 - Region: *Bell* (band around the frequency, Q 0.1 – 20), *Low* (everything
-  below), *High* (everything above) or *Full* (whole signal); slopes 12, 24
-  or 48 dB/oct.
+  below), *High* (everything above) or *Full* (whole signal); slopes 12, 24,
+  48 dB/oct or **Brickwall** (144 dB/oct edges for Low / High; for Bell a flat
+  band between the Q edges with 96 dB/oct sides).
 - Enable, Solo (listen to the processed region only), Mute (removes the
   region), Pan, Delete.
 
@@ -90,9 +92,13 @@ Diode, Fuzz, Foldback, Rectify, Bitcrush. Drive 0 – 48 dB, Bias (asymmetry –
 even harmonics; sample-rate reduction for Bitcrush), Auto Gain (keeps the
 level constant when the drive changes). A live transfer curve shows the shape.
 
-**Per-band effect chain** – seven modules; drag them in the *EFFECT CHAIN*
-strip to set their order (e.g. filter before or after the distortion,
-compressor before the phaser …). Order changes are click-free.
+**Per-band effect chain** – seven modules shown as tiles in the *EFFECT CHAIN*
+(each with a short summary such as "LP 5.0k" or "Fuzz 22 dB"). Click a tile
+to open that module's page with its controls; drag a tile to change the order
+(e.g. filter before or after the distortion, compressor before the phaser …).
+Order changes are click-free. The band panel keeps region and output on the
+left and dynamics on the right; chips for all 24 bands next to the band name
+select any band (their colour shows how hard each band is driven).
 - *Filter* – Low Pass, High Pass, Band Pass, Notch, Peak, Low Shelf, High
   Shelf, Tilt; 12 / 24 / 48 dB/oct, resonance, gain. Drawn on the display
   with its own handle.
@@ -131,6 +137,16 @@ glow with their live output level, overlapping bands mix their colours, and
 **clashes** – frequencies where two active bands work hard at the same time –
 are marked red under the curves (the hover read-out names the competing band).
 
+**Waveform view** (*WAVEFORM* button) – a scrolling waveform (1 – 10 s): the
+input in grey behind the output, which is coloured by the bands that change
+the signal at each moment, mixed by how much each band changes it. The legend
+ranks the busiest bands in view; hovering names the dominant band at that
+time. Double-click: freeze; wheel: zoom; right-click: span, zoom, freeze.
+
+**Colour themes** – *Settings → Colour Theme*: Ember (warm, default), Sunset
+(warm), Vintage (warm) or Midnight (cool). The interface switches at once; the
+choice is remembered for all GKDIST instances.
+
 **Global section** – oversampling (Off, 2x, 4x, 8x, linear-phase with exact
 integer latency), high-pass / low-pass (12 or 24 dB/oct), bus compressor,
 noise, clipper (soft / hard), brick-wall limiter with 1 ms look-ahead (no
@@ -155,7 +171,9 @@ fades out and back in over 5 ms).
 | Double-click node / Alt+click node | Enable-bypass / delete |
 | Drag **F** handle (selected band) | Filter frequency + gain (resonance for LP/HP/BP/Notch; Ctrl: resonance) |
 | Drag **T** handle (dynamic band) | Detector bell frequency + threshold; wheel: bell Q |
-| Drag a module in EFFECT CHAIN | Change the band's effect order (right-click: reset) |
+| Click / drag a module in EFFECT CHAIN | Edit that module / change the band's effect order (right-click: reset) |
+| Click a band chip (next to the band name) | Select that band |
+| Waveform: double-click / wheel / right-click | Freeze / zoom / span, zoom, freeze menu |
 | Click / double-click a mixer strip header | Select the band / open it on the BAND page |
 | Right-click node / empty area | Band menu (shape, type, filter, FX, solo, mute, dynamics, detector …) / add band, delete all |
 | Delete, Esc | Delete selected band, deselect |
@@ -184,6 +202,9 @@ fades out and back in over 5 ms).
   limited.
 - Effect chain: all 5040 orders encode / decode; a low pass after a hard
   clipper removes the 3rd harmonic 35 dB more than one before it.
+- Brickwall regions: Low / High −84 dB half an octave past the edge; Bell
+  (Q 1) 0.00 dB in the band, below −100 dB outside; a clipping 1 kHz Low band
+  leaves a 3 kHz tone untouched (harmonic −158 dB vs. −37 dB at 12 dB/oct).
 - Band filter: Peak +12 dB measures +12.00 dB, Notch below −250 dB, 24 dB/oct
   low pass −48.2 dB two octaves up, High Shelf −9 dB measures −8.99 dB.
 - FX: all six types active and stable with 90 % feedback; tremolo swing 61 dB;
@@ -200,9 +221,11 @@ fades out and back in over 5 ms).
   gain holding the level, limiter ceiling, state round trip.
 - UI test: dragging nodes, the filter handle, the detector handle and chain
   modules sets the right parameters; undo; intensity and clash detection;
-  one mixer strip per band; LFO modulation visible in the telemetry; all
-  factory presets load and process; hostile / corrupt state blobs are
-  rejected or clamped.
+  one mixer strip per band; LFO modulation visible in the telemetry; a click
+  on a chain tile opens that module's page; the waveform attributes 100 % of
+  the change to the only active band; every colour theme rebuilds the UI and
+  keeps the selection; all factory presets load and process; hostile /
+  corrupt state blobs are rejected or clamped.
 
 ## Known limitations
 

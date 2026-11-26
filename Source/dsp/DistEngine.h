@@ -12,6 +12,13 @@
 namespace gkd::dsp
 {
 
+/** One column of the waveform view: a control block (32 host samples). */
+struct WaveColumn
+{
+    float inMin = 0, inMax = 0, outMin = 0, outMax = 0;
+    float effect[kNumBands] {};   // RMS of each band's change to the signal
+};
+
 struct EngineInput
 {
     const BandParams*   bands = nullptr;      // kNumBands entries
@@ -23,6 +30,9 @@ struct EngineInput
     BandTelemetry*      telemetryOut = nullptr; // kNumBands
     ModMatrix*          mod = nullptr;          // modulation sources (shared by all engines)
     const ModSlot*      modSlots = nullptr;     // kNumModSlots
+    WaveColumn*         waveOut = nullptr;      // optional: one column per kSub samples
+    int                 waveCapacity = 0;
+    int*                waveCount = nullptr;
 };
 
 /** The complete GKDIST signal path for one oversampling factor:
@@ -41,6 +51,7 @@ public:
 
     int latencySamples() const noexcept { return os.latencySamples() + limiter.latencySamples(); }
     static int lookaheadFor (double hostRate) noexcept { return std::max (1, (int) std::lround (0.001 * hostRate)); }
+    static constexpr int kWaveColumnSamples = 32;   // = kSub
 
     void process (float* const* io, int numChannels, int numSamples, const EngineInput& in);
 

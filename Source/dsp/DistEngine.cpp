@@ -200,6 +200,24 @@ void DistEngine::process (float* const* io, int numChannels, int numSamples, con
             else
                 bands[b].process (xL, xR, 0, stereo, scratch, nullptr, nullptr);   // keeps its ramps in sync
 
+        // Waveform view: input range and how much each band changed this block.
+        if (in.waveOut != nullptr && in.waveCount != nullptr && *in.waveCount < in.waveCapacity)
+        {
+            auto& col = in.waveOut[(*in.waveCount)++];
+            float lo = 0.0f, hi = 0.0f;
+            for (int c = 0; c < nch; ++c)
+                for (int i = 0; i < hn; ++i)
+                {
+                    const float v = dryBuf[c][(size_t) (pos + i)];
+                    lo = std::min (lo, v); hi = std::max (hi, v);
+                }
+            col.inMin = lo; col.inMax = hi;
+            col.outMin = col.outMax = 0.0f;   // filled by the processor from the final output
+            for (int b = 0; b < kNumBands; ++b) col.effect[b] = bands[b].takeEffectRms();
+        }
+        else
+            for (auto& b : bands) b.takeEffectRms();
+
         // Solo: listen to one band's output only
         if (solo >= 0 || soloMix > 0.0)
         {

@@ -67,6 +67,20 @@ public:
     int    getActiveLatency() const noexcept       { return activeLatency.load(); }
     bool   isSidechainActive() const noexcept      { return sidechainActive.load(); }
     /** True while the host is processing audio (telemetry is live). */
+    /** Waveform view: the UI calls requestWaveform() while it is visible and
+        pulls the columns with readWaveform() (single reader, message thread). */
+    void   requestWaveform() noexcept { waveRequestMs.store (juce::Time::getMillisecondCounter(), std::memory_order_relaxed); }
+    int    readWaveform (dsp::WaveColumn* dest, int maxColumns) noexcept;
+
+    /** What the waveform view has collected (message thread only). Kept here so
+        it survives editor rebuilds (theme changes) and closing the editor. */
+    struct WaveHistory
+    {
+        std::vector<dsp::WaveColumn> columns;
+        int writePos = 0, count = 0;
+        double rate = 0.0;
+    };
+    WaveHistory waveHistory;
     bool   isAudioRunning() const noexcept { return juce::Time::getMillisecondCounter() - lastProcessMs.load (std::memory_order_relaxed) < 300u; }
 
     // --- Editing helpers (message thread) ---------------------------------------
@@ -129,6 +143,10 @@ private:
     std::atomic<double> currentRate { 48000.0 };
     std::atomic<bool>   sidechainActive { false };
     std::atomic<juce::uint32> lastProcessMs { 0 };
+    std::atomic<juce::uint32> waveRequestMs { 0 };
+    static constexpr int kWaveFifoSize = 16384;
+    juce::AbstractFifo waveFifo { kWaveFifoSize };
+    std::vector<dsp::WaveColumn> waveFifoData, waveBlock;
     std::atomic<int>    activeLatency { 0 };
     std::atomic<float>  globalCompGr { 0.0f }, limiterGr { 0.0f }, outPeakDb { -100.0f };
 

@@ -7,18 +7,129 @@
 namespace gkd::ui
 {
 
+namespace
+{
+    struct ThemeDef
+    {
+        juce::uint32 bg0, bg1, bg2, panel, panelEdge, grid, gridStrong, text, textDim, accent, accent2, curve,
+                     preSpec, postSpec, scSpec, instSpec, collision, on, warn, knobHi, knobLo;
+        juce::uint32 palette[12];   // 0 = generated golden-ratio hues
+    };
+
+    const ThemeDef kThemes[] = {
+        // Ember: charcoal brown, amber accent, fire / gold / rose bands
+        { 0xff110c0a, 0xff19120f, 0xff211814, 0xe6241a15, 0xff3d2c23, 0x14ffe3cc, 0x28ffe3cc, 0xfff3e6da, 0xffa38f80,
+          0xffff9a3d, 0xffff5e7a, 0xfffff3e6, 0xff4d3a30, 0xffc9967a, 0xffffc04d, 0xffe08bff, 0xffff3b5c, 0xff8fd16a,
+          0xffffc04d, 0xff3a2c25, 0xff1c1411,
+          { 0xffff8a3d, 0xffffc247, 0xffff5d5d, 0xffe86aa6, 0xffffa77a, 0xffd9a441, 0xffff7350, 0xffc65a7c,
+            0xfff2d17c, 0xffe0663a, 0xffff9fb4, 0xffc2c65a } },
+        // Sunset: plum night, pink / orange / violet bands
+        { 0xff130b14, 0xff1b111d, 0xff241726, 0xe6261828, 0xff422a47, 0x14ffd9f0, 0x28ffd9f0, 0xfff6e6f0, 0xffa98ea3,
+          0xffff6f91, 0xffffb057, 0xfffff0f6, 0xff45304d, 0xffc98fb0, 0xffffb057, 0xffc77dff, 0xffff3b3b, 0xff7fd8a0,
+          0xffffc04d, 0xff3c2840, 0xff1a101c,
+          { 0xffff6f91, 0xffffa45c, 0xffc77dff, 0xffffd166, 0xffff8fab, 0xffef476f, 0xfff9a03f, 0xffb185db,
+            0xffff5c8a, 0xffffc3a0, 0xffd66ba0, 0xfff4845f } },
+        // Vintage: tube amp - dark olive, brass accent, cream / copper / sage bands
+        { 0xff121009, 0xff1a1810, 0xff222017, 0xe6242219, 0xff403b2a, 0x14fff2cc, 0x28fff2cc, 0xfff1e9d0, 0xffa59d82,
+          0xffe8b04a, 0xffd8643a, 0xfffff8e6, 0xff45402f, 0xffbfae85, 0xffe8b04a, 0xffc9a0dc, 0xffff4b3b, 0xff9fc46a,
+          0xffffc857, 0xff38342a, 0xff1a1812,
+          { 0xffe8b04a, 0xffd8643a, 0xffeedc9a, 0xffa9b45a, 0xffc8794a, 0xffe0524a, 0xffd6b23a, 0xff7fae8f,
+            0xffd98a8a, 0xfff0923c, 0xffc9b98a, 0xffb5524f } },
+        // Midnight: the original cool blue look, rainbow bands
+        { 0xff0b0e13, 0xff11151c, 0xff181d26, 0xe61a202a, 0xff2b3344, 0x14ffffff, 0x26ffffff, 0xffd9dfea, 0xff7f8a9e,
+          0xff4fc3ff, 0xffc58bff, 0xfff4f6fa, 0xff3a4a66, 0xff7d9cc9, 0xffff9f43, 0xffc58bff, 0xffff4d5e, 0xff35d07f,
+          0xffffc04d, 0xff2a3140, 0xff151a22,
+          { 0 } },
+    };
+    static_assert (sizeof (kThemes) / sizeof (kThemes[0]) == (size_t) ThemeId::Count, "theme table out of sync");
+
+    ThemeId current = ThemeId::Ember;
+    std::array<juce::Colour, kNumBands> palette;
+
+    void buildPalette (const ThemeDef& t)
+    {
+        for (int b = 0; b < kNumBands; ++b)
+        {
+            if (t.palette[0] == 0)
+            {
+                const float hue = std::fmod (0.03f + (float) b * 0.61803398875f, 1.0f);
+                palette[(size_t) b] = juce::Colour::fromHSV (hue, 0.62f, 0.98f, 1.0f);
+                continue;
+            }
+            const juce::Colour base (t.palette[b % 12]);
+            if (b < 12) { palette[(size_t) b] = base; continue; }
+            // Bands 13 - 24: same family, shifted hue and lighter, so neighbours stay distinct.
+            float h, s, v;
+            base.getHSB (h, s, v);
+            palette[(size_t) b] = juce::Colour::fromHSV (std::fmod (h + 0.035f, 1.0f), s * 0.72f, std::min (1.0f, v * 1.08f + 0.05f), 1.0f);
+        }
+    }
+
+    bool paletteReady = false;
+}
+
+juce::StringArray themeNames() { return { "Ember (warm)", "Sunset (warm)", "Vintage (warm)", "Midnight (cool)" }; }
+
+ThemeId currentTheme() noexcept { return current; }
+
+void applyTheme (ThemeId id)
+{
+    const int i = juce::jlimit (0, (int) ThemeId::Count - 1, (int) id);
+    current = (ThemeId) i;
+    const auto& t = kThemes[i];
+    using namespace Colours;
+    bg0 = juce::Colour (t.bg0); bg1 = juce::Colour (t.bg1); bg2 = juce::Colour (t.bg2); panel = juce::Colour (t.panel);
+    panelEdge = juce::Colour (t.panelEdge); grid = juce::Colour (t.grid); gridStrong = juce::Colour (t.gridStrong);
+    text = juce::Colour (t.text); textDim = juce::Colour (t.textDim); accent = juce::Colour (t.accent);
+    accent2 = juce::Colour (t.accent2); curve = juce::Colour (t.curve); preSpec = juce::Colour (t.preSpec);
+    postSpec = juce::Colour (t.postSpec); scSpec = juce::Colour (t.scSpec); instSpec = juce::Colour (t.instSpec);
+    collision = juce::Colour (t.collision); on = juce::Colour (t.on); warn = juce::Colour (t.warn);
+    knobHi = juce::Colour (t.knobHi); knobLo = juce::Colour (t.knobLo);
+    buildPalette (t);
+    paletteReady = true;
+}
+
+ThemeManager::ThemeManager()
+{
+    juce::PropertiesFile::Options o;
+    o.applicationName = "GKDIST";
+    o.folderName = "GKDIST";
+    o.filenameSuffix = ".settings";
+    o.osxLibrarySubFolder = "Application Support";
+    o.storageFormat = juce::PropertiesFile::storeAsXML;
+    settings = std::make_unique<juce::PropertiesFile> (o);
+    // The settings file may have been edited by hand: clamp.
+    theme = (ThemeId) juce::jlimit (0, (int) ThemeId::Count - 1, settings->getIntValue ("theme", 0));
+    applyTheme (theme);
+}
+
+void ThemeManager::set (ThemeId t, bool persist)
+{
+    t = (ThemeId) juce::jlimit (0, (int) ThemeId::Count - 1, (int) t);
+    if (persist && settings != nullptr)
+    {
+        settings->setValue ("theme", (int) t);
+        settings->saveIfNeeded();
+    }
+    if (t == theme && currentTheme() == t) return;
+    theme = t;
+    applyTheme (t);
+    sendSynchronousChangeMessage();
+}
+
 juce::Colour bandColour (int band)
 {
-    const float hue = std::fmod (0.03f + (float) band * 0.61803398875f, 1.0f);
-    return juce::Colour::fromHSV (hue, 0.62f, 0.98f, 1.0f);
+    if (! paletteReady) applyTheme (current);
+    return palette[(size_t) juce::jlimit (0, kNumBands - 1, band)];
 }
 
 juce::Colour intensityColour (int band, float intensity)
 {
     const float i = juce::jlimit (0.0f, 1.0f, intensity);
-    const float hue = std::fmod (0.03f + (float) band * 0.61803398875f, 1.0f);
+    float h, s, v;
+    bandColour (band).getHSB (h, s, v);
     // Gentle settings are pale and dim, hard-driven bands fully saturated and bright.
-    return juce::Colour::fromHSV (hue, 0.22f + 0.78f * i, 0.62f + 0.38f * i, 1.0f);
+    return juce::Colour::fromHSV (h, s * (0.3f + 0.7f * i), std::min (1.0f, v * (0.62f + 0.42f * i)), 1.0f);
 }
 
 juce::Path shapeIcon (Shape s, juce::Rectangle<float> r)
@@ -126,7 +237,7 @@ void LookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int 
 
     // Body
     const float br = radius - 6.0f;
-    juce::ColourGradient grad (juce::Colour (0xff2a3140), c.x, c.y - br, juce::Colour (0xff151a22), c.x, c.y + br, false);
+    juce::ColourGradient grad (Colours::knobHi, c.x, c.y - br, Colours::knobLo, c.x, c.y + br, false);
     g.setGradientFill (grad);
     g.fillEllipse (c.x - br, c.y - br, br * 2.0f, br * 2.0f);
     g.setColour (juce::Colour (0x30ffffff));

@@ -4,6 +4,7 @@
 
 // Numerical verification of the GKDIST DSP core.
 #include "dsp/DistEngine.h"
+#include "dsp/RegionDesign.h"
 
 #include <chrono>
 #include <complex>
@@ -473,7 +474,7 @@ static void testAutomationStress()
                     p.used = rng.nextFloat() < 0.8f; p.enabled = rng.nextFloat() < 0.9f;
                     p.shape = (Shape) rng.nextInt ((int) Shape::Count);
                     p.freq = 20.0 * std::pow (1000.0, rng.nextDouble()); p.q = 0.1 * std::pow (200.0, rng.nextDouble());
-                    p.slope = rng.nextInt (3);
+                    p.slope = rng.nextInt (kNumRegionSlopes);   // includes brickwall
                     p.type = (DistType) rng.nextInt ((int) DistType::Count);
                     p.driveDb = rng.nextDouble() * 48.0; p.bias = rng.nextDouble() * 2.0 - 1.0; p.autoGain = rng.nextBool();
                     p.filterType = (BandFilter) rng.nextInt ((int) BandFilter::Count); p.filterSlope = rng.nextInt (3);
@@ -678,6 +679,50 @@ static void testChainAndFilter()
     CHECK (pre > -20.0 && post < pre - 25.0, "chain order changes the result (%.1f vs %.1f dB)", pre, post);
 }
 
+static void testBrickwall()
+{
+    std::printf ("[16] Brickwall band regions\n");
+    // Region magnitudes
+    for (double fs : { 48000.0, 384000.0 })
+    {
+        auto magDb = [fs] (const AnalogFilter& a, double f) { return gainToDb (a.mag (kTwoPi * f / fs)); };
+        const auto low12 = designRegionFilter (Shape::Low, 1000.0, 1.0, 0, fs);
+        const auto lowBw = designRegionFilter (Shape::Low, 1000.0, 1.0, kRegionBrickwall, fs);
+        const auto highBw = designRegionFilter (Shape::High, 1000.0, 1.0, kRegionBrickwall, fs);
+        const auto bellBw = designRegionFilter (Shape::Bell, 1000.0, 1.0, kRegionBrickwall, fs);
+        double lo, hi;
+        bandEdges (1000.0, 1.0, lo, hi);
+        std::printf ("  fs %6.0f: Low 1 kHz at 1.5 kHz: 12 dB/oct %.1f dB, brickwall %.1f dB; High brickwall at 667 Hz %.1f dB;"
+                     " Bell brickwall (Q 1, %.0f - %.0f Hz): 1 kHz %.2f dB, 300 Hz %.1f dB, 3.4 kHz %.1f dB, %d sections\n",
+                     fs, magDb (low12, 1500.0), magDb (lowBw, 1500.0), magDb (highBw, 667.0), lo, hi,
+                     magDb (bellBw, 1000.0), magDb (bellBw, 300.0), magDb (bellBw, 3400.0), bellBw.num);
+        CHECK (magDb (lowBw, 1500.0) < -80.0 && magDb (lowBw, 500.0) > -0.1, "brickwall low region");
+        CHECK (magDb (highBw, 667.0) < -80.0 && magDb (highBw, 2000.0) > -0.1, "brickwall high region");
+        CHECK (std::abs (magDb (bellBw, 1000.0)) < 0.2 && magDb (bellBw, 300.0) < -80.0 && magDb (bellBw, 3400.0) < -80.0
+               && bellBw.num <= kMaxSections, "brickwall bell region");
+    }
+
+    // In the engine: a hard-clipping Low band at 1 kHz must not touch a 3 kHz tone
+    // with the brickwall slope, while the 12 dB/oct slope lets part of it in.
+    const double fs = 48000.0;
+    const int n = 32768, start = n / 2, len = 8192;
+    auto h3of3k = [&] (int slope, int osLog2) -> double
+    {
+        Setup st;
+        auto& b = st.band (0);
+        b.shape = Shape::Low; b.freq = 1000.0; b.slope = slope; b.type = DistType::HardClip; b.driveDb = 30.0; b.autoGain = false;
+        DistEngine e;
+        e.prepare (fs, 512, 2, osLog2);
+        Stereo y = sine (fs, n, { { 3000.0, 0.3 } });
+        run (e, st, y);
+        return db (toneAmp (y.L, start, len, 9000.0, fs) / toneAmp (y.L, start, len, 3000.0, fs));
+    };
+    const double soft = h3of3k (0, 0), brick = h3of3k (kRegionBrickwall, 0), brick4 = h3of3k (kRegionBrickwall, 2);
+    std::printf ("  3 kHz tone through a clipping 1 kHz Low band: 9 kHz harmonic 12 dB/oct %.1f dB, brickwall %.1f dB (4x: %.1f dB)\n",
+                 soft, brick, brick4);
+    CHECK (soft > -60.0 && brick < -90.0 && brick4 < -90.0, "brickwall keeps content outside the region clean");
+}
+
 static void testFxPanMute()
 {
     std::printf ("[13] Band FX, pan, mute\n");
@@ -871,6 +916,7 @@ int main()
     testFxPanMute();
     testDetectorBell();
     testModulation();
+    testBrickwall();
     testPerformance();
     std::printf ("\n%s (%d failure%s)\n", failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED", failures, failures == 1 ? "" : "s");
     return failures == 0 ? 0 : 1;

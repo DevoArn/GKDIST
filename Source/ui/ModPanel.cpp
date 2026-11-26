@@ -10,7 +10,7 @@ namespace gkd::ui
 
 namespace
 {
-    const juce::Colour kLfoColour[2] { juce::Colour (0xff4fc3ff), juce::Colour (0xffc58bff) };
+    juce::Colour lfoColour (int l) { return l == 0 ? Colours::accent : Colours::accent2; }
     constexpr int kRowH = 28;
 
     /** Deterministic shape for drawing (random shapes are drawn as a fixed example). */
@@ -111,8 +111,8 @@ ModPanel::ModPanel (GKDistProcessor& p) : proc (p)
         u.div.attach (proc.param (globalParamId (divIdx[l])));
         u.sync.attach (proc.param (globalParamId (syncIdx[l])));
         u.rate.attach (proc.param (globalParamId (rateIdx[l])));
-        u.rate.setAccent (kLfoColour[l]);
-        u.sync.setOnColour (kLfoColour[l].withAlpha (0.45f));
+        u.rate.setAccent (lfoColour (l));
+        u.sync.setOnColour (lfoColour (l).withAlpha (0.45f));
         u.sync.setTooltip ("Sync the LFO to the host tempo (follows the song position while playing)");
         u.shape.onEdit = [this] { edited(); };
         u.div.onEdit = [this] { edited(); };
@@ -171,7 +171,7 @@ void ModPanel::timerCallback()
         u.rate.setEnabled (! g.lfoSync[l]);
         u.div.setEnabled (g.lfoSync[l]);
         if (isVisible())   // only the active page animates
-            u.scope.set (g.lfoShape[l], live ? proc.getLfoValue (l) : 0.0f, live ? proc.getLfoPhase (l) : 0.0f, kLfoColour[l]);
+            u.scope.set (g.lfoShape[l], live ? proc.getLfoValue (l) : 0.0f, live ? proc.getLfoPhase (l) : 0.0f, lfoColour (l));
     }
     if (! isVisible()) return;
     const float ein = live ? proc.getEnvValue (0) : 0.0f, esc = live ? proc.getEnvValue (1) : 0.0f;
@@ -185,8 +185,8 @@ void ModPanel::timerCallback()
         u.band.setEnabled (on);
         u.target.setEnabled (on);
         u.amount.setEnabled (on);
-        const juce::Colour c = slot.source == ModSource::Lfo1 ? kLfoColour[0]
-                             : slot.source == ModSource::Lfo2 ? kLfoColour[1]
+        const juce::Colour c = slot.source == ModSource::Lfo1 ? lfoColour (0)
+                             : slot.source == ModSource::Lfo2 ? lfoColour (1)
                              : slot.source == ModSource::InputEnv ? Colours::on : Colours::scSpec;
         u.value.setValue (on && live ? proc.getModSlotValue (s) : 0.0f, c);
     }

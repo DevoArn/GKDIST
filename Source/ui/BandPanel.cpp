@@ -9,21 +9,127 @@ namespace gkd::ui
 
 namespace
 {
-    // Widest row (row 2) needs 1206 px: fits the 1280 px minimum window width.
-    constexpr int kKnobW = 56, kKnobH = 72, kColW = 96, kGap = 10;
-    const char* kSectionNames[] = { "REGION", "DISTORTION", "FILTER", "OUTPUT", "FX", "PHAT / NOISE", "COMPRESSOR",
-                                    "CLIP / LIMIT", "DYNAMICS", "EFFECT CHAIN" };
+    constexpr int kKnobW = 56, kKnobH = 72;          // region / output / dynamics
+    constexpr int kPageKnobW = 64, kPageKnobH = 84;  // module pages
+    constexpr int kColW = 96, kPageColW = 110, kGap = 10;
+    constexpr int kChipW = 24, kChipGap = 2;
+
+    const char* moduleTitle (Module m)
+    {
+        static const char* t[] = { "Filter", "Drive", "Phat", "Noise", "FX", "Compressor", "Clip / Limit" };
+        return t[juce::jlimit (0, kNumModules - 1, (int) m)];
+    }
+
+    const char* moduleHelp (Module m)
+    {
+        switch (m)
+        {
+            case Module::Filter:     return "Shapes the band at its place in the chain. Drag the F handle on the display.";
+            case Module::Distortion: return "The band's distortion. Bias adds even harmonics, Auto Gain keeps the level steady.";
+            case Module::Phat:       return "Adds a sub-octave and warm low end, generated from the band's lows.";
+            case Module::Noise:      return "Noise shaped to the band's region. Follow makes it breathe with the signal.";
+            case Module::Fx:         return "Modulation effect: phaser, flanger, chorus, vibrato, tremolo or auto pan.";
+            case Module::Compressor: return "Compresses the band at this point of the chain.";
+            case Module::Clipper:    return "Soft clip, hard clip or limit the band at the ceiling.";
+            case Module::Count:
+            default:                 return "";
+        }
+    }
+
+    void section (juce::Graphics& g, juce::Rectangle<int> r, const juce::String& name)
+    {
+        g.setColour (Colours::bg1.withAlpha (0.6f));
+        g.fillRoundedRectangle (r.toFloat(), 6.0f);
+        g.setColour (Colours::panelEdge);
+        g.drawRoundedRectangle (r.toFloat(), 6.0f, 1.0f);
+        g.setColour (Colours::textDim);
+        g.setFont (LookAndFeel::font (10.5f, true));
+        g.drawText (name, r.withHeight (14).translated (9, 3), juce::Justification::centredLeft);
+    }
 }
 
-BandPanel::BandPanel (GKDistProcessor& p) : proc (p), chain (p)
+// ---------------------------------------------------------------------------
+void BandChips::tick()
+{
+    const bool live = proc.isAudioRunning();
+    for (int b = 0; b < kNumBands; ++b)
+    {
+        bands[b] = proc.refs.readBand (b);
+        const auto t = proc.getTelemetry (b);
+        const float drive = live ? t.driveDb : (float) bands[b].driveDb, wet = live ? t.wet : (float) bands[b].wet;
+        intensity[b] = juce::jlimit (0.0f, 1.0f, drive / 36.0f) * (0.3f + 0.7f * juce::jlimit (0.0f, 1.0f, wet));
+    }
+    repaint();
+}
+
+int BandChips::chipAt (float x) const
+{
+    const int i = (int) std::floor (x / (float) (kChipW + kChipGap));
+    return i >= 0 && i < kNumBands ? i : -1;
+}
+
+void BandChips::paint (juce::Graphics& g)
+{
+    g.setFont (LookAndFeel::font (10.0f, true));
+    for (int b = 0; b < kNumBands; ++b)
+    {
+        const auto r = juce::Rectangle<float> ((float) (b * (kChipW + kChipGap)), 1.0f, (float) kChipW, (float) getHeight() - 2.0f);
+        if (bands[b].used)
+        {
+            const auto c = intensityColour (b, intensity[b]);
+            g.setColour (c.withAlpha (bands[b].enabled ? 0.9f : 0.35f));
+            g.fillRoundedRectangle (r, 4.0f);
+            g.setColour (juce::Colours::black.withAlpha (0.85f));
+        }
+        else
+        {
+            g.setColour (Colours::panelEdge.withAlpha (0.6f));
+            g.drawRoundedRectangle (r.reduced (0.5f), 4.0f, 1.0f);
+            g.setColour (Colours::textDim.withAlpha (0.45f));
+        }
+        g.drawText (juce::String (b + 1), r, juce::Justification::centred);
+        if (b == selected)
+        {
+            g.setColour (Colours::text);
+            g.drawRoundedRectangle (r.expanded (1.0f), 5.0f, 1.8f);
+        }
+    }
+}
+
+void BandChips::mouseDown (const juce::MouseEvent& e)
+{
+    const int b = chipAt (e.position.x);
+    if (b >= 0 && bands[b].used && onSelect) onSelect (b);
+}
+
+juce::String BandChips::getTooltip()
+{
+    if (hover < 0) return {};
+    const auto& p = bands[hover];
+    if (! p.used) return "Band " + juce::String (hover + 1) + ": unused (double-click the display to add a band)";
+    return "Band " + juce::String (hover + 1) + ": " + shapeNames()[(int) p.shape] + " " + formatFrequency (p.freq) + ", "
+         + distTypeNames()[(int) p.type] + " " + formatDb (p.driveDb, false);
+}
+
+// ---------------------------------------------------------------------------
+BandPanel::BandPanel (GKDistProcessor& p) : proc (p), chain (p), chips (p)
 {
     for (auto* c : std::initializer_list<juce::Component*> {
-             &prevBtn, &nextBtn, &deleteBtn, &enableBtn, &soloBtn, &muteBtn, &autoBtn, &compBtn, &dynBtn, &scBtn,
+             &deleteBtn, &enableBtn, &soloBtn, &muteBtn, &autoBtn, &compBtn, &dynBtn, &scBtn,
              &shapeBox, &slopeBox, &typeBox, &filterBox, &filterSlopeBox, &noiseTypeBox, &clipBox, &fxBox, &detBox,
              &freq, &q, &drive, &bias, &fFreq, &fRes, &fGain, &wet, &gain, &pan, &fxRate, &fxDepth, &fxFeedback, &fxMix,
              &phat, &noise, &follow, &cThresh, &cRatio, &cAttack, &cRelease, &cMakeup, &ceiling,
-             &dThresh, &dAttack, &dRelease, &detFreq, &detQ, &dGain, &dDrive, &dWet, &curve, &grMeter, &dynMeter, &chain })
+             &dThresh, &dAttack, &dRelease, &detFreq, &detQ, &dGain, &dDrive, &dWet, &curve, &response, &grMeter, &dynMeter,
+             &chain, &chips })
         addAndMakeVisible (c);
+
+    pageControls[(size_t) Module::Filter]     = { &filterBox, &filterSlopeBox, &fFreq, &fRes, &fGain, &response };
+    pageControls[(size_t) Module::Distortion] = { &typeBox, &autoBtn, &drive, &bias, &curve };
+    pageControls[(size_t) Module::Phat]       = { &phat };
+    pageControls[(size_t) Module::Noise]      = { &noiseTypeBox, &noise, &follow };
+    pageControls[(size_t) Module::Fx]         = { &fxBox, &fxRate, &fxDepth, &fxFeedback, &fxMix };
+    pageControls[(size_t) Module::Compressor] = { &compBtn, &grMeter, &cThresh, &cRatio, &cAttack, &cRelease, &cMakeup };
+    pageControls[(size_t) Module::Clipper]    = { &clipBox, &ceiling };
 
     for (auto* k : { &freq, &q, &drive, &bias, &fFreq, &fRes, &fGain, &wet, &gain, &pan, &fxRate, &fxDepth, &fxFeedback, &fxMix,
                      &phat, &noise, &follow, &cThresh, &cRatio, &cAttack, &cRelease, &cMakeup, &ceiling,
@@ -41,6 +147,8 @@ BandPanel::BandPanel (GKDistProcessor& p) : proc (p), chain (p)
     for (auto* c : { &shapeBox, &slopeBox, &typeBox, &filterBox, &filterSlopeBox, &noiseTypeBox, &clipBox, &fxBox, &detBox })
         c->onEdit = [this] { refresh(); edited(); };
     chain.onEdit = [this] { edited(); };
+    chain.onModuleSelected = [this] (Module m) { showModule (m); };
+    chips.onSelect = [this] (int b) { if (onSelectBand) onSelectBand (b); };
 
     enableBtn.setOnColour (Colours::on.withAlpha (0.35f));
     soloBtn.setOnColour (Colours::warn.withAlpha (0.45f));
@@ -50,15 +158,15 @@ BandPanel::BandPanel (GKDistProcessor& p) : proc (p), chain (p)
     dynBtn.setTooltip ("Dynamics: the detector level moves gain, drive and wet by their +/- ranges");
     scBtn.setTooltip ("Trigger the dynamics from the external side-chain input");
     detBox.setTooltip ("Detector: listen to the band's own region, or to an independent bell (drag the T handle on the display)");
-    filterBox.setTooltip ("Band filter; its place in the signal chain is set in EFFECT CHAIN (drag the F handle on the display)");
+    slopeBox.setTooltip ("Region slope; Brickwall = 144 dB/oct edges (a flat band between the edges for Bell)");
+    filterBox.setTooltip ("Band filter; its place in the signal chain is set in the effect chain above");
     fxBox.setTooltip ("Modulation effect for this band");
     phat.slider.setTooltip ("Phat: sub-octave and saturated low end for weight");
     follow.slider.setTooltip ("Noise follows the band level (100 % = silent when the band is silent)");
     curve.setTooltip ("Transfer curve of the distortion (input -> output)");
+    response.setTooltip ("Filter response");
     detFreq.slider.setTooltip ("Frequency of the detector bell");
     detQ.slider.setTooltip ("Width of the detector bell");
-    prevBtn.onClick = [this] { stepBand (-1); };
-    nextBtn.onClick = [this] { stepBand (1); };
     deleteBtn.onClick = [this]
     {
         if (band < 0) return;
@@ -69,6 +177,8 @@ BandPanel::BandPanel (GKDistProcessor& p) : proc (p), chain (p)
         if (onSelectBand) onSelectBand (-1);
     };
 
+    module = (Module) juce::jlimit (0, kNumModules - 1, (int) proc.uiState.getProperty ("bandModule", (int) Module::Distortion));
+    chain.setSelectedModule (module);
     setBand (-1);
     startTimerHz (20);
 }
@@ -81,19 +191,20 @@ void BandPanel::edited()
     juce::MessageManager::callAsync ([safe] { if (safe != nullptr && safe->onEdit) safe->onEdit(); });
 }
 
-void BandPanel::stepBand (int dir)
+void BandPanel::showModule (Module m)
 {
-    if (band < 0) return;
-    for (int i = 1; i <= kNumBands; ++i)
-    {
-        const int b = (band + dir * i + kNumBands * 2) % kNumBands;
-        if (proc.refs.readBand (b).used) { if (onSelectBand) onSelectBand (b); return; }
-    }
+    module = (Module) juce::jlimit (0, kNumModules - 1, (int) m);
+    chain.setSelectedModule (module);
+    proc.uiState.setProperty ("bandModule", (int) module, nullptr);
+    refresh();
+    repaint();
 }
 
 void BandPanel::setBand (int b)
 {
     band = b;
+    chips.setSelected (b);
+    chips.tick();   // a freshly built panel shows the bands at once
     auto prm = [this] (int idx) { return band >= 0 ? proc.param (bandParamId (band, idx)) : nullptr; };
 
     freq.attach (prm (bpFreq)); q.attach (prm (bpQ)); drive.attach (prm (bpDrive)); bias.attach (prm (bpBias));
@@ -115,6 +226,7 @@ void BandPanel::setBand (int b)
 
     const bool has = band >= 0;
     for (auto* c : getChildren()) c->setVisible (has);
+    chips.setVisible (true);   // band selection is always available
     if (has)
     {
         const auto col = bandColour (band);
@@ -134,6 +246,10 @@ void BandPanel::refresh()
     if (band < 0) return;
     const auto p = proc.refs.readBand (band);
     if (! p.used) { if (onSelectBand) onSelectBand (-1); return; }
+
+    // Only the selected module's page is visible.
+    for (int m = 0; m < kNumModules; ++m)
+        for (auto* c : pageControls[(size_t) m]) c->setVisible ((Module) m == module);
 
     q.setEnabled (p.shape == Shape::Bell);
     slopeBox.setEnabled (p.shape != Shape::Full);
@@ -163,11 +279,13 @@ void BandPanel::refresh()
     detQ.setEnabled (p.dynOn && p.detMode == DetMode::Bell);
     pan.setEnabled (proc.getMainBusNumOutputChannels() > 1);
     curve.set (p.type, p.driveDb, p.bias, p.autoGain, bandColour (band));
+    response.set (p, proc.getCurrentSampleRate(), bandColour (band));
     chain.update (p);
 }
 
 void BandPanel::timerCallback()
 {
+    chips.tick();
     if (band < 0) return;
     refresh();
     if (band < 0) return;
@@ -186,7 +304,7 @@ void BandPanel::paint (juce::Graphics& g)
     {
         g.setColour (Colours::textDim);
         g.setFont (LookAndFeel::font (15.0f));
-        g.drawText ("Double-click the display to add a band, or click a band to edit it.",
+        g.drawText ("Double-click the display to add a band, or pick a band above.",
                     getLocalBounds().withTrimmedTop (kHeader), juce::Justification::centred);
         return;
     }
@@ -201,22 +319,79 @@ void BandPanel::paint (juce::Graphics& g)
     g.setColour (col);
     g.strokePath (shapeIcon (p.shape, { 80.0f, 7.0f, 24.0f, 12.0f }), juce::PathStrokeType (1.6f));
 
-    g.setFont (LookAndFeel::font (10.5f, true));
-    for (int s = 0; s < numSections; ++s)
-    {
-        const auto r = sections[(size_t) s].toFloat();
-        g.setColour (Colours::bg1.withAlpha (0.55f));
-        g.fillRoundedRectangle (r, 5.0f);
-        g.setColour (Colours::panelEdge);
-        g.drawRoundedRectangle (r, 5.0f, 1.0f);
-        g.setColour (Colours::textDim);
-        g.drawText (kSectionNames[s], r.withHeight (14.0f).translated (8.0f, 2.0f), juce::Justification::centredLeft);
-    }
+    section (g, secRegion, "REGION");
+    section (g, secOut, "OUTPUT");
+    section (g, secDyn, "DYNAMICS");
+    section (g, secChain, "EFFECT CHAIN");
+
+    g.setFont (LookAndFeel::font (10.5f));
+    g.setColour (Colours::textDim);
+    g.drawText ("click a module to edit it  -  drag to reorder", secChain.withHeight (14).translated (0, 3).withTrimmedRight (10),
+                juce::Justification::centredRight);
+
+    // module page header: title in the band colour + what it does
+    g.setColour (Colours::panelEdge);
+    g.drawHorizontalLine (pageArea.getY() - 4, (float) pageArea.getX(), (float) pageArea.getRight());
+    g.setFont (LookAndFeel::font (14.0f, true));
+    g.setColour (col);
+    const juce::String title (moduleTitle (module));
+    g.drawText (title, pageArea.getX(), pageArea.getY(), 120, 18, juce::Justification::centredLeft);
     g.setFont (LookAndFeel::font (11.0f));
     g.setColour (Colours::textDim);
-    const auto cs = sections[secChain];
-    g.drawText ("Signal flows left to right - drag a module to move it. The band's region goes in, wet / gain / pan come after.",
-                cs.withTrimmedTop (60).reduced (10, 0).withHeight (16), juce::Justification::centredLeft);
+    const int tw = LookAndFeel::font (14.0f, true).getStringWidth (title) + 12;
+    g.drawText (moduleHelp (module), pageArea.getX() + tw, pageArea.getY(), pageArea.getWidth() - tw, 18,
+                juce::Justification::centredLeft);
+    if (! ChainStrip::moduleActive (module, p))
+    {
+        g.setColour (Colours::textDim.withAlpha (0.7f));
+        g.drawText ("(off)", pageArea.getX(), pageArea.getY() + 20, 120, 14, juce::Justification::centredLeft);
+    }
+
+    g.setFont (LookAndFeel::font (10.5f));
+    g.setColour (Colours::textDim);
+    g.drawFittedText (p.detMode == DetMode::Bell ? "Detector bell: drag T on the display (wheel: width)."
+                                                 : "Detector: the band's own region (drag T for the threshold).",
+                      secDyn.withTrimmedTop (secDyn.getHeight() - 26).reduced (10, 4), juce::Justification::centredLeft, 2);
+}
+
+void BandPanel::layoutModulePage()
+{
+    auto a = pageArea.withTrimmedTop (36);
+    auto knobs = [&a] (std::initializer_list<Knob*> list)
+    {
+        for (auto* k : list) { k->setBounds (a.removeFromLeft (kPageKnobW).withHeight (kPageKnobH)); a.removeFromLeft (2); }
+    };
+    auto combos = [&a] (std::initializer_list<juce::Component*> list)
+    {
+        auto col = a.removeFromLeft (kPageColW);
+        a.removeFromLeft (10);
+        int y = col.getY() + 6;
+        for (auto* c : list) { c->setBounds (col.getX(), y, col.getWidth(), 22); y += 27; }
+    };
+
+    combos ({ &filterBox, &filterSlopeBox }); knobs ({ &fFreq, &fRes, &fGain });
+    a.removeFromLeft (8);
+    response.setBounds (a.withHeight (std::min (a.getHeight(), 140)));
+
+    a = pageArea.withTrimmedTop (36);
+    combos ({ &typeBox, &autoBtn }); knobs ({ &drive, &bias });
+    a.removeFromLeft (8);
+    curve.setBounds (a.removeFromLeft (170).withHeight (std::min (a.getHeight(), 140)));
+
+    a = pageArea.withTrimmedTop (36);
+    knobs ({ &phat });
+
+    a = pageArea.withTrimmedTop (36);
+    combos ({ &noiseTypeBox }); knobs ({ &noise, &follow });
+
+    a = pageArea.withTrimmedTop (36);
+    combos ({ &fxBox }); knobs ({ &fxRate, &fxDepth, &fxFeedback, &fxMix });
+
+    a = pageArea.withTrimmedTop (36);
+    combos ({ &compBtn, &grMeter }); knobs ({ &cThresh, &cRatio, &cAttack, &cRelease, &cMakeup });
+
+    a = pageArea.withTrimmedTop (36);
+    combos ({ &clipBox }); knobs ({ &ceiling });
 }
 
 void BandPanel::resized()
@@ -224,78 +399,51 @@ void BandPanel::resized()
     auto r = getLocalBounds().reduced (8, 0);
     auto head = r.removeFromTop (kHeader).withTrimmedRight (kTabsWidth);
     head.removeFromLeft (112);
-    prevBtn.setBounds (head.removeFromLeft (28).reduced (0, 3));
-    head.removeFromLeft (3);
-    nextBtn.setBounds (head.removeFromLeft (28).reduced (0, 3));
-    head.removeFromLeft (8);
     enableBtn.setBounds (head.removeFromLeft (44).reduced (0, 3));
     head.removeFromLeft (4);
     soloBtn.setBounds (head.removeFromLeft (52).reduced (0, 3));
     head.removeFromLeft (4);
     deleteBtn.setBounds (head.removeFromLeft (44).reduced (0, 3));
+    head.removeFromLeft (16);
+    chips.setBounds (head.removeFromLeft (kNumBands * (kChipW + kChipGap)).reduced (0, 3));
 
-    r.removeFromTop (4);
-    const int rowH = kKnobH + 18;
-    auto row1 = r.removeFromTop (rowH);
-    r.removeFromTop (6);
-    auto row2 = r.removeFromTop (rowH);
-    r.removeFromTop (6);
-    auto row3 = r.removeFromTop (rowH);
+    auto body = r.withTrimmedTop (4).withTrimmedBottom (6);
+    auto colA = body.removeFromLeft (280);
+    body.removeFromLeft (kGap);
+    secDyn = body.removeFromRight (336);
+    body.removeFromRight (kGap);
+    secChain = body;
+    secRegion = colA.removeFromTop ((colA.getHeight() - 8) / 2);
+    colA.removeFromTop (8);
+    secOut = colA;
 
-    auto place = [] (juce::Rectangle<int>& area, int width) { auto s = area.removeFromLeft (width); area.removeFromLeft (kGap); return s; };
-    auto inner = [] (juce::Rectangle<int> s) { return s.withTrimmedTop (16).reduced (6, 2); };
+    auto inner = [] (juce::Rectangle<int> s) { return s.withTrimmedTop (20).reduced (8, 2); };
     auto knobs = [] (juce::Rectangle<int>& area, std::initializer_list<Knob*> list)
     {
         for (auto* k : list) k->setBounds (area.removeFromLeft (kKnobW).withHeight (kKnobH));
     };
-    auto combos = [] (juce::Rectangle<int>& area, std::initializer_list<juce::Component*> list)
+    auto combos = [] (juce::Rectangle<int>& area, int width, std::initializer_list<juce::Component*> list)
     {
-        auto col = area.removeFromLeft (kColW);
+        auto col = area.removeFromLeft (width);
         area.removeFromLeft (4);
-        const int h = 20, gap = 3;   // three items fit the 70 px control height
         int y = col.getY() + 4;
-        for (auto* c : list) { c->setBounds (col.getX(), y, col.getWidth(), h); y += h + gap; }
+        for (auto* c : list) { c->setBounds (col.getX(), y, col.getWidth(), 20); y += 23; }
     };
 
-    // Row 1: region, distortion, filter, output
-    {
-        auto a = row1;
-        sections[secRegion] = place (a, kColW + 4 + 2 * kKnobW + 12);
-        sections[secDist]   = place (a, kColW + 4 + 2 * kKnobW + 92 + 12);
-        sections[secFilter] = place (a, kColW + 4 + 3 * kKnobW + 12);
-        sections[secOut]    = place (a, kColW + 4 + 3 * kKnobW + 12);
+    auto s = inner (secRegion); combos (s, kColW, { &shapeBox, &slopeBox }); knobs (s, { &freq, &q });
+    s = inner (secOut);         combos (s, 72, { &muteBtn }); knobs (s, { &wet, &gain, &pan });
 
-        auto s = inner (sections[secRegion]); combos (s, { &shapeBox, &slopeBox }); knobs (s, { &freq, &q });
-        s = inner (sections[secDist]);   combos (s, { &typeBox, &autoBtn }); knobs (s, { &drive, &bias });
-        curve.setBounds (s.removeFromLeft (88).withHeight (kKnobH - 2).reduced (2, 4));
-        s = inner (sections[secFilter]); combos (s, { &filterBox, &filterSlopeBox }); knobs (s, { &fFreq, &fRes, &fGain });
-        s = inner (sections[secOut]);    combos (s, { &muteBtn }); knobs (s, { &wet, &gain, &pan });
-    }
-    // Row 2: FX, phat / noise, compressor, clip
-    {
-        auto a = row2;
-        sections[secFx]   = place (a, kColW + 4 + 4 * kKnobW + 12);
-        sections[secPhat] = place (a, kKnobW + kColW + 4 + 2 * kKnobW + 12);
-        sections[secComp] = place (a, kColW + 4 + 5 * kKnobW + 12);
-        sections[secClip] = place (a, kColW + 4 + kKnobW + 12);
+    s = inner (secDyn);
+    combos (s, kColW, { &dynBtn, &scBtn, &detBox, &dynMeter });
+    auto row1 = s.removeFromTop (kKnobH);
+    s.removeFromTop (8);
+    auto row2 = s.removeFromTop (kKnobH);
+    knobs (row1, { &detFreq, &detQ, &dThresh, &dAttack });
+    knobs (row2, { &dRelease, &dGain, &dDrive, &dWet });
 
-        auto s = inner (sections[secFx]);   combos (s, { &fxBox }); knobs (s, { &fxRate, &fxDepth, &fxFeedback, &fxMix });
-        s = inner (sections[secPhat]);      knobs (s, { &phat }); combos (s, { &noiseTypeBox }); knobs (s, { &noise, &follow });
-        s = inner (sections[secComp]);      combos (s, { &compBtn, &grMeter }); knobs (s, { &cThresh, &cRatio, &cAttack, &cRelease, &cMakeup });
-        s = inner (sections[secClip]);      combos (s, { &clipBox }); knobs (s, { &ceiling });
-    }
-    // Row 3: dynamics (with detector bell), effect chain
-    {
-        auto a = row3;
-        sections[secDyn]   = place (a, kColW + 4 + 8 * kKnobW + 12);
-        sections[secChain] = a;
-
-        const auto ds = sections[secDyn];
-        dynMeter.setBounds (ds.getX() + 80, ds.getY() + 3, 160, 11);
-        auto s = inner (ds); combos (s, { &dynBtn, &scBtn, &detBox });
-        knobs (s, { &dThresh, &dAttack, &dRelease, &detFreq, &detQ, &dGain, &dDrive, &dWet });
-        chain.setBounds (inner (sections[secChain]).withTrimmedTop (4).withHeight (34).reduced (4, 0));
-    }
+    chain.setBounds (secChain.withTrimmedTop (22).withHeight (46).reduced (10, 0));
+    pageArea = secChain.withTrimmedTop (22 + 46 + 12).reduced (10, 0).withTrimmedBottom (6);
+    layoutModulePage();
 }
 
 } // namespace gkd::ui

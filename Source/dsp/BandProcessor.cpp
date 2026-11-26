@@ -113,21 +113,7 @@ void BandProcessor::designRegion (bool snap)
 
     DigitalFilter d;
     if ((Shape) key.shape != Shape::Full)
-    {
-        DesignParams dp;
-        dp.freq = std::exp (eLogF);
-        dp.slopeIdx = regionSlopeDesignIdx (key.slope);
-        switch ((Shape) key.shape)
-        {
-            case Shape::Bell: dp.type = FilterType::BandPass; dp.q = std::exp (eLogQ); break;
-            case Shape::Low:  dp.type = FilterType::HighCut;  dp.q = kDefaultQ; break;
-            case Shape::High: dp.type = FilterType::LowCut;   dp.q = kDefaultQ; break;
-            case Shape::Full:
-            case Shape::Count:
-            default: break;
-        }
-        d = designDigital (designAnalog (dp, osRate));
-    }
+        d = designDigital (designRegionFilter ((Shape) key.shape, std::exp (eLogF), std::exp (eLogQ), key.slope, osRate));
     region.setTarget (d, snap || fresh);
     noiseRegion.setTarget (d, snap || fresh);
 }
@@ -468,13 +454,16 @@ void BandProcessor::process (double* L, double* R, int n, bool stereo, BandScrat
         {
             const double pg = ! stereo ? 1.0 : (c == 0 ? rPanL + dpl * k : rPanR + dpr * k);
             const double out = pg * g * (b[c][i] + w * (x[c][i] - b[c][i]));
-            io[c][i] += f * (out - b[c][i]);
+            const double change = f * (out - b[c][i]);
+            io[c][i] += change;
+            effectAcc += change * change;
             pk = std::max (pk, std::abs (out) * f);
             if (c == 0 && soloL != nullptr) soloL[i] = out;
             if (c == 1 && soloR != nullptr) soloR[i] = out;
         }
     }
     fade = f;
+    effectCount += n * nch;
     const double decayed = levelEnv * std::pow (levelDecay, (double) n);
     levelEnv = std::isfinite (pk) ? std::max (pk, decayed) : 0.0;
     finish();

@@ -11,15 +11,17 @@ namespace gkd::ui
 {
 
 /** The band's effect chain as a row of tiles (signal flows left to right).
-    Drag a tile to move that module; right-click for "Reset order". */
+    Click a tile to edit that module, drag it to move the module in the
+    chain; right-click for "Reset order". Each tile shows a short summary. */
 class ChainStrip : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     explicit ChainStrip (GKDistProcessor& p);
 
     void setBand (int b);
-    /** Refreshes order and which modules are active (call from a timer). */
+    /** Refreshes order, summaries and which modules are active (call from a timer). */
     void update (const BandParams& p);
+    void setSelectedModule (Module m);
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -27,20 +29,24 @@ public:
     void mouseUp (const juce::MouseEvent&) override;
 
     std::function<void()> onEdit;
+    std::function<void (Module)> onModuleSelected;
 
     // For tests: the tile currently at a slot, and the centre of a slot.
     int moduleAt (int slot) const noexcept { return order[juce::jlimit (0, kNumModules - 1, slot)]; }
     juce::Point<float> slotCentre (int slot) const;
 
+    static bool moduleActive (Module m, const BandParams& p);
+    static juce::String moduleSummary (Module m, const BandParams& p);
+
 private:
     juce::Rectangle<float> tileBounds (int slot) const;
     int slotAt (float x) const;
-    bool moduleActive (Module m) const;
     void commitOrder();
 
     GKDistProcessor& proc;
     int band = -1;
     int order[kNumModules] { 0, 1, 2, 3, 4, 5, 6 };
+    Module selectedModule = Module::Distortion;
     BandParams params;
     int dragSlot = -1;
     float dragX = 0.0f, grabOffset = 0.0f;

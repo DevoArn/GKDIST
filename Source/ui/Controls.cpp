@@ -4,6 +4,8 @@
 
 #include "Controls.h"
 #include "../dsp/Shapers.h"
+#include "../dsp/FilterDesign.h"
+#include <cstring>
 
 namespace gkd::ui
 {
@@ -131,6 +133,75 @@ void TransferCurve::paint (juce::Graphics& g)
     }
     g.setColour (colour);
     g.strokePath (p, juce::PathStrokeType (1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+
+// ---------------------------------------------------------------------------
+void ResponseCurve::set (const BandParams& p, double sampleRate, juce::Colour c)
+{
+    const double k[7] { (double) p.filterType, (double) p.filterSlope, p.filterFreq, p.filterRes, p.filterGainDb, sampleRate,
+                        (double) c.getARGB() };
+    if (std::memcmp (k, key, sizeof (k)) == 0) return;
+    std::memcpy (key, k, sizeof (k));
+    colour = c;
+    on = p.filterType != BandFilter::Off;
+    if (on)
+    {
+        dsp::DesignParams d;
+        d.type = bandFilterDesignType (p.filterType);
+        d.freq = p.filterFreq;
+        d.q = p.filterRes;
+        d.gainDb = p.filterGainDb;
+        d.slopeIdx = regionSlopeDesignIdx (p.filterSlope);
+        const auto a = dsp::designAnalog (d, sampleRate);
+        for (int i = 0; i < kPoints; ++i)
+        {
+            const double f = 20.0 * std::pow (1000.0, i / (double) (kPoints - 1));
+            db[(size_t) i] = (float) dsp::gainToDb (a.mag (dsp::kTwoPi * std::min (f, 0.499 * sampleRate) / sampleRate));
+        }
+    }
+    repaint();
+}
+
+void ResponseCurve::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (Colours::bg0);
+    g.fillRoundedRectangle (r, 4.0f);
+    const auto in = r.reduced (4.0f, 6.0f);
+    auto yOf = [&in] (float v) { return in.getCentreY() - juce::jlimit (-24.0f, 24.0f, v) / 24.0f * 0.5f * in.getHeight(); };
+    g.setColour (Colours::grid);
+    for (float f : { 100.0f, 1000.0f, 10000.0f })
+    {
+        const float x = in.getX() + in.getWidth() * std::log (f / 20.0f) / std::log (1000.0f);
+        g.drawVerticalLine ((int) x, in.getY(), in.getBottom());
+    }
+    for (float v : { -12.0f, 12.0f }) g.drawHorizontalLine ((int) yOf (v), in.getX(), in.getRight());
+    g.setColour (Colours::gridStrong);
+    g.drawHorizontalLine ((int) yOf (0.0f), in.getX(), in.getRight());
+    g.setFont (LookAndFeel::font (9.5f));
+    g.setColour (Colours::textDim);
+    g.drawText ("100", juce::Rectangle<float> (in.getX() + in.getWidth() / 3.0f - 14.0f, in.getBottom() - 11.0f, 28.0f, 11.0f), juce::Justification::centred);
+    g.drawText ("1k", juce::Rectangle<float> (in.getX() + in.getWidth() * 2.0f / 3.0f - 14.0f, in.getBottom() - 11.0f, 28.0f, 11.0f), juce::Justification::centred);
+    if (! on)
+    {
+        g.drawText ("filter off", in, juce::Justification::centred);
+        return;
+    }
+    juce::Path p;
+    for (int i = 0; i < kPoints; ++i)
+    {
+        const float x = in.getX() + in.getWidth() * (float) i / (float) (kPoints - 1);
+        const float y = yOf (db[(size_t) i]);
+        if (i == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
+    }
+    juce::Path fill (p);
+    fill.lineTo (in.getRight(), yOf (0.0f));
+    fill.lineTo (in.getX(), yOf (0.0f));
+    fill.closeSubPath();
+    g.setColour (colour.withAlpha (0.18f));
+    g.fillPath (fill);
+    g.setColour (colour);
+    g.strokePath (p, juce::PathStrokeType (1.8f));
 }
 
 // ---------------------------------------------------------------------------

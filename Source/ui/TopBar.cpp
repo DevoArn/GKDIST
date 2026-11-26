@@ -27,6 +27,15 @@ TopBar::TopBar (GKDistProcessor& p) : proc (p)
     saveBtn.onClick = [this] { savePreset(); };
     settingsBtn.onClick = [this] { showSettingsMenu(); };
     helpBtn.onClick = [this] { showHelp(); };
+    addAndMakeVisible (waveBtn);
+    waveBtn.setClickingTogglesState (true);
+    waveBtn.setToggleState ((bool) proc.uiState.getProperty ("wave", false), juce::dontSendNotification);
+    waveBtn.setTooltip ("Show / hide the waveform view: the output coloured by the bands that change it");
+    waveBtn.onClick = [this]
+    {
+        proc.uiState.setProperty ("wave", waveBtn.getToggleState(), nullptr);
+        if (onWaveToggled) onWaveToggled();
+    };
     startTimerHz (8);
 }
 
@@ -35,6 +44,7 @@ TopBar::~TopBar() { stopTimer(); }
 void TopBar::timerCallback()
 {
     undoBtn.setEnabled (proc.canUndo());
+    waveBtn.setToggleState ((bool) proc.uiState.getProperty ("wave", false), juce::dontSendNotification);
     redoBtn.setEnabled (proc.canRedo());
     aBtn.setToggleState (proc.getABSlot() == 0, juce::dontSendNotification);
     bBtn.setToggleState (proc.getABSlot() == 1, juce::dontSendNotification);
@@ -76,8 +86,9 @@ void TopBar::resized()
     bBtn.setBounds (r.removeFromLeft (28)); r.removeFromLeft (4);
     copyBtn.setBounds (r.removeFromLeft (72)); r.removeFromLeft (14);
     helpBtn.setBounds (r.removeFromRight (28)); r.removeFromRight (4);
-    settingsBtn.setBounds (r.removeFromRight (72)); r.removeFromRight (8);
-    infoArea = r.removeFromRight (250);
+    settingsBtn.setBounds (r.removeFromRight (72)); r.removeFromRight (4);
+    waveBtn.setBounds (r.removeFromRight (88)); r.removeFromRight (8);
+    infoArea = r.removeFromRight (230);
     r.removeFromRight (8);
     prevPreset.setBounds (r.removeFromLeft (28)); r.removeFromLeft (2);
     saveBtn.setBounds (r.removeFromRight (54)); r.removeFromRight (6);
@@ -160,7 +171,7 @@ void TopBar::savePreset()
 void TopBar::showSettingsMenu()
 {
     auto& ui = proc.uiState;
-    juce::PopupMenu m, range, res, speed, tilt, sizes;
+    juce::PopupMenu m, range, res, speed, tilt, sizes, themesMenu;
     m.addItem (1, "Pre Spectrum", true, (bool) ui.getProperty ("anaPre", true));
     m.addItem (2, "Post Spectrum", true, (bool) ui.getProperty ("anaPost", true));
     m.addItem (3, "Freeze Analyser", true, (bool) ui.getProperty ("anaFreeze", false));
@@ -181,6 +192,9 @@ void TopBar::showSettingsMenu()
     sizes.addItem (51, "Large (1600 x 1040)");
     sizes.addItem (52, "Extra Large (1920 x 1200)");
     m.addSubMenu ("Window Size", sizes);
+    const auto tn = themeNames();
+    for (int i = 0; i < tn.size(); ++i) themesMenu.addItem (60 + i, tn[i], true, (int) currentTheme() == i);
+    m.addSubMenu ("Colour Theme", themesMenu);
     m.addItem (4, "GPU Accelerated Drawing (OpenGL)", true, (bool) ui.getProperty ("gpu", true));
 
     juce::Component::SafePointer<TopBar> safe (this);
@@ -201,6 +215,7 @@ void TopBar::showSettingsMenu()
         if (r >= 40 && r < 45) u.setProperty ("anaTilt", tilts[r - 40], nullptr);
         const int w[] = { 1280, 1600, 1920 }, h[] = { 900, 1040, 1200 };
         if (r >= 50 && r < 53 && safe->onResizeRequest) safe->onResizeRequest (w[r - 50], h[r - 50]);
+        if (r >= 60 && r < 60 + (int) ThemeId::Count && safe->onThemeRequest) safe->onThemeRequest ((ThemeId) (r - 60));
     });
 }
 
@@ -212,13 +227,20 @@ void TopBar::showHelp()
         "  Drag a node: frequency (left/right) and drive (up/down).\n"
         "  Shift+drag: fine.  Ctrl+drag: Q.  Wheel: Q.  Ctrl+wheel: wet.\n"
         "  Double-click a node: enable/bypass.  Alt+click: delete.\n"
+        "  The chips next to the band name select any band.\n"
+        "\nEffect chain\n"
         "  Each band takes its region of the signal (Bell, Low, High or Full),\n"
-        "  processes it (filter, distortion, phat, noise, compressor, clipper)\n"
-        "  and mixes it back with Wet and Gain.\n"
+        "  runs it through its chain (filter, drive, phat, noise, FX, comp, clip)\n"
+        "  and mixes it back with Wet, Gain and Pan.\n"
+        "  Click a module in the chain to edit it, drag it to change the order.\n"
+        "  F handle on the display: filter frequency / gain.\n"
         "\nDynamics\n"
-        "  The band level (or the external side-chain) is compared with the\n"
-        "  threshold; over 12 dB above it the band's gain, drive and wet move by\n"
-        "  their +/- ranges.\n"
+        "  The detector (band region or its own bell, or the side-chain) is\n"
+        "  compared with the threshold (T handle); over 12 dB above it the band's\n"
+        "  gain, drive and wet move by their +/- ranges.\n"
+        "\nColours\n"
+        "  Brighter, more saturated bands are driven harder; red marks show\n"
+        "  clashes between bands. Settings > Colour Theme changes the colours.\n"
         "\nGlobal\n"
         "  Oversampling reduces aliasing. The limiter guarantees the ceiling.\n"
         "\nKeyboard\n"

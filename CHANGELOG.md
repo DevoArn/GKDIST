@@ -4,11 +4,12 @@
 
 First public release.
 
-- Up to 24 bands with Bell / Low / High / Full regions (12, 24, 48 dB/oct),
-  drawn as draggable nodes (frequency × drive) over a live spectrum.
+- Up to 24 bands with Bell / Low / High / Full regions, drawn as draggable nodes (frequency × drive) over a live spectrum.
 - 10 distortion types: Soft Clip, Hard Clip, Tube, Tape, Transistor, Diode,
   Fuzz, Foldback, Rectify, Bitcrush; drive, bias and auto gain.
-- Per-band effect chain with a draggable order: filter (LP / HP / BP / Notch /
+- Band regions with 12 / 24 / 48 dB/oct or brickwall slopes.
+- Per-band effect chain with a draggable order; click a module to open its
+  page. Chips select any of the 24 bands. Modules: filter (LP / HP / BP / Notch /
   Peak / Low and High Shelf / Tilt, 12 – 48 dB/oct, drawn on the display with
   a handle), distortion, Phat (sub-octave weight), noise (white / pink /
   crackle, envelope follow), FX (phaser, flanger, chorus, vibrato, tremolo,
@@ -21,6 +22,8 @@ First public release.
   side-chain envelope followers, 8-slot matrix to any band parameter.
 - Visual feedback: band colours saturate with intensity, live glow, colour
   mixing where bands overlap, clash marking between competing bands.
+- Waveform view: the output coloured by the bands that change it.
+- Colour themes: Ember (default), Sunset, Vintage (warm) and Midnight (cool).
 - Global section: oversampling Off / 2x / 4x / 8x, high-/low-pass, bus
   compressor, noise, clipper, 1 ms look-ahead brick-wall limiter, dry/wet
   mix, output gain, latency-compensated bypass.

@@ -23,6 +23,8 @@ public:
     std::function<void()> onStateLoaded;
     std::function<void()> onGpuToggled;
     std::function<void (int, int)> onResizeRequest;
+    std::function<void (ThemeId)> onThemeRequest;
+    std::function<void()> onWaveToggled;
 
 private:
     struct PresetRef { bool factory = true; int index = 0; juce::File file; juce::String name; };
@@ -39,7 +41,7 @@ private:
     GKDistProcessor& proc;
     juce::TextButton undoBtn { "Undo" }, redoBtn { "Redo" }, aBtn { "A" }, bBtn { "B" }, copyBtn { "Copy A>B" },
                      prevPreset { "<" }, nextPreset { ">" }, presetBtn { "Default" }, saveBtn { "Save" },
-                     settingsBtn { "Settings" }, helpBtn { "?" };
+                     settingsBtn { "Settings" }, helpBtn { "?" }, waveBtn { "WAVEFORM" };
     std::unique_ptr<juce::AlertWindow> saveDialog;
     juce::Rectangle<int> infoArea;
 };

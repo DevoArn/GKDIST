@@ -68,6 +68,10 @@ void GKDistProcessor::initUIDefaults()
     clampInt ("width", 1280, 2560, 1280);
     clampInt ("height", 800, 1600, 900);
     clampInt ("lowerTab", 0, 2, 0);
+    setDefault ("wave", false);
+    clampInt ("waveSpan", 0, 3, 1);
+    clampInt ("waveZoom", 0, 3, 0);
+    clampInt ("bandModule", 0, kNumModules - 1, (int) Module::Distortion);
 }
 
 juce::AudioProcessorParameter* GKDistProcessor::getBypassParameter() const
@@ -111,6 +115,9 @@ void GKDistProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     switchStep = (float) (1.0 / (0.004 * sampleRate));
     bypassStep = (float) (1.0 / (0.010 * sampleRate));
     modMatrix.prepare (sampleRate);
+    waveFifoData.assign ((size_t) kWaveFifoSize, dsp::WaveColumn());
+    waveBlock.assign ((size_t) (engineBlock / dsp::DistEngine::kWaveColumnSamples + 2), dsp::WaveColumn());
+    waveFifo.reset();
     const auto g = refs.readGlobal();
     bypassMix = g.bypass ? 1.0f : 0.0f;
     activateEngine (g.osLog2);
@@ -218,6 +225,15 @@ void GKDistProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         in.telemetryOut = telRT;
         in.mod = &modMatrix;
         in.modSlots = modSlotsRT;
+        const bool wantWave = juce::Time::getMillisecondCounter() - waveRequestMs.load (std::memory_order_relaxed) < 500u
+                              && ! waveBlock.empty();
+        int waveCount = 0;
+        if (wantWave)
+        {
+            in.waveOut = waveBlock.data();
+            in.waveCapacity = (int) waveBlock.size();
+            in.waveCount = &waveCount;
+        }
         engines[activeOs].process (io, nch, len, in);
 
         for (int i = 0; i < len; ++i)
@@ -240,6 +256,31 @@ void GKDistProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                 io[ch][i] = out;
                 peak = juce::jmax (peak, std::abs (out));
             }
+        }
+
+        // Waveform columns: output range of the final signal, then hand them to the UI.
+        if (waveCount > 0)
+        {
+            constexpr int cs = dsp::DistEngine::kWaveColumnSamples;
+            for (int k = 0; k < waveCount; ++k)
+            {
+                float lo = 0.0f, hi = 0.0f;
+                for (int ch = 0; ch < nch; ++ch)
+                    for (int i = k * cs; i < juce::jmin (len, (k + 1) * cs); ++i)
+                    {
+                        const float v = io[ch][i];
+                        lo = juce::jmin (lo, v); hi = juce::jmax (hi, v);
+                    }
+                waveBlock[(size_t) k].outMin = lo;
+                waveBlock[(size_t) k].outMax = hi;
+                if (bypassMix > 0.5f)   // bypassed: the output is the dry signal
+                    for (auto& e : waveBlock[(size_t) k].effect) e = 0.0f;
+            }
+            int s1, n1, s2, n2;
+            waveFifo.prepareToWrite (waveCount, s1, n1, s2, n2);   // drops columns if the UI is not reading
+            for (int k = 0; k < n1; ++k) waveFifoData[(size_t) (s1 + k)] = waveBlock[(size_t) k];
+            for (int k = 0; k < n2; ++k) waveFifoData[(size_t) (s2 + k)] = waveBlock[(size_t) (n1 + k)];
+            waveFifo.finishedWrite (n1 + n2);
         }
 
         if (switchState == Switch::FadingOut && switchGain <= 0.0f)
@@ -276,6 +317,17 @@ void GKDistProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     envValue[0].store ((float) modMatrix.sourceValue (ModSource::InputEnv), std::memory_order_relaxed);
     envValue[1].store ((float) modMatrix.sourceValue (ModSource::SidechainEnv), std::memory_order_relaxed);
     for (int m = 0; m < kNumModSlots; ++m) modSlotValue[(size_t) m].store ((float) modMatrix.slotOutput (m), std::memory_order_relaxed);
+}
+
+int GKDistProcessor::readWaveform (dsp::WaveColumn* dest, int maxColumns) noexcept
+{
+    if (waveFifoData.empty() || maxColumns <= 0) return 0;
+    int s1, n1, s2, n2;
+    waveFifo.prepareToRead (maxColumns, s1, n1, s2, n2);
+    for (int k = 0; k < n1; ++k) dest[k] = waveFifoData[(size_t) (s1 + k)];
+    for (int k = 0; k < n2; ++k) dest[n1 + k] = waveFifoData[(size_t) (s2 + k)];
+    waveFifo.finishedRead (n1 + n2);
+    return n1 + n2;
 }
 
 dsp::BandTelemetry GKDistProcessor::getTelemetry (int band) const noexcept

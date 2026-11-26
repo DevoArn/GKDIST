@@ -385,6 +385,83 @@ int main (int argc, char** argv)
         ed->showPage (0);
     }
 
+    std::printf ("[module pages and brickwall]\n");
+    {
+        auto& bp = ed->getBandPanel();
+        ed->getDisplay().selectBand (b2);
+        // a click (no drag) on a chain tile opens that module's page
+        auto& chain = bp.getChainStrip();
+        int fxSlot = 0;
+        for (int s = 0; s < kNumModules; ++s) if (chain.moduleAt (s) == (int) Module::Fx) fxSlot = s;
+        const auto c = chain.slotCentre (fxSlot);
+        chain.mouseDown (mouseEvent (chain, c, c, false));
+        chain.mouseUp (mouseEvent (chain, c, c, false));
+        expect (bp.getModule() == Module::Fx, "clicking a chain tile opens that module");
+        expect (proc.refs.readBand (b2).chainCode == encodeChainOrder (proc.refs.readBand (b2).order), "a click does not reorder the chain");
+        feed (proc, 12, rng);
+        save (*ed, "build/ui_page_fx.png");
+        bp.showModule (Module::Filter);
+        proc.setParam (bandParamId (b2, bpSlope), (float) kRegionBrickwall);
+        feed (proc, 20, rng);
+        expect (proc.refs.readBand (b2).slope == kRegionBrickwall, "band region slope can be set to brickwall");
+        save (*ed, "build/ui_page_filter_brickwall.png");
+        bp.showModule (Module::Distortion);
+    }
+
+    std::printf ("[waveform]\n");
+    {
+        ed->setWaveformVisible (true);
+        auto& w = ed->getWaveform();
+        expect (w.isVisible(), "waveform view can be shown");
+        // Only the hot 450 Hz hard-clip band active: the waveform colour must come from it.
+        int hot = -1;
+        for (int b = 0; b < kNumBands; ++b)
+        {
+            const auto p = proc.refs.readBand (b);
+            if (p.used && std::abs (p.freq - 450.0) < 1.0) hot = b;
+        }
+        std::vector<int> wasOn;
+        for (int b = 0; b < kNumBands; ++b)
+            if (b != hot && proc.refs.readBand (b).used && proc.refs.readBand (b).enabled)
+            {
+                wasOn.push_back (b);
+                proc.setParam (bandParamId (b, bpEnabled), 0.0f);
+            }
+        for (int i = 0; i < 6; ++i) { w.pullNow(); feed (proc, 12, rng); }
+        w.pullNow();
+        float share = 0.0f;
+        const auto plot = w.getLocalBounds().toFloat();
+        const int dom = w.dominantBand (plot.getRight() - 20.0f, &share);
+        std::printf ("  %d columns stored; newest columns dominated by band %d (%.0f %% of the change; expected band %d)\n",
+                     w.columnsStored(), dom + 1, share * 100.0f, hot + 1);
+        expect (w.columnsStored() > 100, "waveform receives columns from the audio thread");
+        expect (dom == hot && share > 0.9f, "waveform colour is attributed to the band that changes the signal");
+        save (*ed, "build/ui_waveform_single.png");
+        for (int b : wasOn) proc.setParam (bandParamId (b, bpEnabled), 1.0f);
+        for (int i = 0; i < 6; ++i) { w.pullNow(); feed (proc, 12, rng); }
+        save (*ed, "build/ui_waveform.png");
+    }
+
+    std::printf ("[colour themes]\n");
+    {
+        const int sel = ed->getDisplay().getSelectedBand();
+        const auto names = ui::themeNames();
+        for (int t = 0; t < (int) ThemeId::Count; ++t)
+        {
+            ed->setTheme ((ThemeId) t, false);
+            feed (proc, 12, rng);   // the editor rebuilds asynchronously
+            const bool ok = ui::currentTheme() == (ThemeId) t && ed->getDisplay().getSelectedBand() == sel
+                            && ed->getWaveform().isVisible();
+            std::printf ("  %-16s bg %s, band 1 %s%s\n", names[t].toRawUTF8(), ui::Colours::bg0.toDisplayString (false).toRawUTF8(),
+                         ui::bandColour (0).toDisplayString (false).toRawUTF8(), ok ? "" : "  STATE LOST");
+            expect (ok, "theme switch rebuilds the UI and keeps the selection and views");
+            save (*ed, "build/ui_theme_" + juce::String (t) + ".png");
+        }
+        ed->setTheme (ThemeId::Ember, false);
+        feed (proc, 6, rng);
+        ed->setWaveformVisible (false);
+    }
+
     proc.setParam (globalParamId (gpLimitOn), 1.0f);
     ed->setSize (1600, 1040);
     ed->getDisplay().selectBand (b4);

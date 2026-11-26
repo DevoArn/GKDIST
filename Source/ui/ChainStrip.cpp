@@ -9,12 +9,19 @@ namespace gkd::ui
 
 namespace
 {
-    constexpr float kArrowW = 12.0f;
+    constexpr float kArrowW = 14.0f;
+
+    juce::String shortHz (double f)
+    {
+        if (f >= 1000.0) return formatNumber (f / 1000.0, f >= 10000.0 ? 0 : 1) + "k";
+        return formatNumber (f, 0);
+    }
 }
 
 ChainStrip::ChainStrip (GKDistProcessor& p) : proc (p)
 {
-    setTooltip ("Effect chain of this band, signal flows left to right. Drag a module to change the order; right-click to reset.");
+    setTooltip ("Effect chain of this band, signal flows left to right. Click a module to edit it, "
+                "drag it to change the order; right-click to reset the order.");
 }
 
 void ChainStrip::setBand (int b)
@@ -22,6 +29,13 @@ void ChainStrip::setBand (int b)
     band = b;
     dragSlot = -1;
     if (band >= 0) update (proc.refs.readBand (band));
+    repaint();
+}
+
+void ChainStrip::setSelectedModule (Module m)
+{
+    if (m == selectedModule) return;
+    selectedModule = m;
     repaint();
 }
 
@@ -47,19 +61,48 @@ int ChainStrip::slotAt (float x) const
     return juce::jlimit (0, kNumModules - 1, (int) std::floor ((x + 0.5f * kArrowW) / (w + kArrowW)));
 }
 
-bool ChainStrip::moduleActive (Module m) const
+bool ChainStrip::moduleActive (Module m, const BandParams& p)
 {
     switch (m)
     {
-        case Module::Filter:     return params.filterType != BandFilter::Off;
+        case Module::Filter:     return p.filterType != BandFilter::Off;
         case Module::Distortion: return true;
-        case Module::Phat:       return params.phat > 0.0;
-        case Module::Noise:      return params.noiseDb > kNoiseOffDb + 0.05;
-        case Module::Fx:         return params.fxType != FxType::Off;
-        case Module::Compressor: return params.compOn;
-        case Module::Clipper:    return params.clipMode != ClipMode::Off;
+        case Module::Phat:       return p.phat > 0.0;
+        case Module::Noise:      return p.noiseDb > kNoiseOffDb + 0.05;
+        case Module::Fx:         return p.fxType != FxType::Off;
+        case Module::Compressor: return p.compOn;
+        case Module::Clipper:    return p.clipMode != ClipMode::Off;
         case Module::Count:
         default:                 return false;
+    }
+}
+
+juce::String ChainStrip::moduleSummary (Module m, const BandParams& p)
+{
+    if (! moduleActive (m, p)) return "off";
+    switch (m)
+    {
+        case Module::Filter:
+        {
+            static const char* s[] = { "", "LP", "HP", "BP", "Notch", "Peak", "LoSh", "HiSh", "Tilt" };
+            return juce::String (s[(int) p.filterType]) + " " + shortHz (p.filterFreq);
+        }
+        case Module::Distortion:
+        {
+            static const char* s[] = { "Soft", "Hard", "Tube", "Tape", "Trans", "Diode", "Fuzz", "Fold", "Rect", "Crush" };
+            return juce::String (s[(int) p.type]) + " " + formatNumber (p.driveDb, 0) + " dB";
+        }
+        case Module::Phat:       return formatNumber (p.phat * 100.0, 0) + " %";
+        case Module::Noise:      return noiseTypeNames()[(int) p.noiseType] + " " + formatNumber (p.noiseDb, 0);
+        case Module::Fx:         return fxTypeNames()[(int) p.fxType];
+        case Module::Compressor: return formatNumber (p.compRatio, p.compRatio < 10.0 ? 1 : 0) + ":1";
+        case Module::Clipper:
+        {
+            static const char* s[] = { "", "Soft", "Hard", "Limit" };
+            return juce::String (s[(int) p.clipMode]) + " " + formatNumber (p.clipCeiling, 0);
+        }
+        case Module::Count:
+        default:                 return {};
     }
 }
 
@@ -68,17 +111,36 @@ void ChainStrip::paint (juce::Graphics& g)
     if (band < 0) return;
     const auto names = moduleNames();
     const auto col = bandColour (band);
-    g.setFont (LookAndFeel::font (11.0f, true));
 
     auto drawTile = [&] (juce::Rectangle<float> r, int module, bool lifted)
     {
-        const bool on = moduleActive ((Module) module);
-        g.setColour (lifted ? Colours::bg2.brighter (0.25f) : (on ? col.withAlpha (0.28f) : Colours::bg1));
-        g.fillRoundedRectangle (r.reduced (0.5f), 4.0f);
-        g.setColour (lifted ? juce::Colours::white : (on ? col : Colours::panelEdge));
-        g.drawRoundedRectangle (r.reduced (0.5f), 4.0f, lifted ? 1.6f : 1.0f);
-        g.setColour (on ? Colours::text : Colours::textDim);
-        g.drawText (names[module], r, juce::Justification::centred);
+        const bool on = moduleActive ((Module) module, params);
+        const bool sel = (Module) module == selectedModule;
+        auto rr = r.reduced (0.5f);
+        g.setColour (lifted ? Colours::bg2.brighter (0.25f) : (on ? col.withAlpha (sel ? 0.36f : 0.20f) : Colours::bg1));
+        g.fillRoundedRectangle (rr, 5.0f);
+        if (sel)
+        {
+            g.setColour (Colours::accent);
+            g.drawRoundedRectangle (rr, 5.0f, 2.0f);
+            g.fillRect (rr.getX() + 8.0f, rr.getBottom() - 3.0f, rr.getWidth() - 16.0f, 3.0f);
+        }
+        else
+        {
+            g.setColour (lifted ? Colours::text : (on ? col.withAlpha (0.8f) : Colours::panelEdge));
+            g.drawRoundedRectangle (rr, 5.0f, lifted ? 1.6f : 1.0f);
+        }
+        // active dot
+        g.setColour (on ? col : Colours::panelEdge);
+        g.fillEllipse (rr.getX() + 6.0f, rr.getY() + 6.0f, 6.0f, 6.0f);
+
+        auto t = rr.reduced (4.0f, 4.0f);
+        g.setColour (on || sel ? Colours::text : Colours::textDim);
+        g.setFont (LookAndFeel::font (11.5f, true));
+        g.drawText (names[module], t.removeFromTop (t.getHeight() * 0.55f), juce::Justification::centredBottom);
+        g.setColour (on ? Colours::text.withAlpha (0.75f) : Colours::textDim.withAlpha (0.6f));
+        g.setFont (LookAndFeel::font (10.0f));
+        g.drawFittedText (moduleSummary ((Module) module, params), t.toNearestInt(), juce::Justification::centredTop, 1, 0.8f);
     };
 
     for (int s = 0; s < kNumModules; ++s)
@@ -86,9 +148,9 @@ void ChainStrip::paint (juce::Graphics& g)
         const auto r = tileBounds (s);
         if (s < kNumModules - 1)
         {
-            const float ax = r.getRight() + 2.0f, ay = r.getCentreY();
+            const float ax = r.getRight() + 3.0f, ay = r.getCentreY();
             juce::Path a;
-            a.addTriangle (ax + 2.0f, ay - 4.0f, ax + kArrowW - 4.0f, ay, ax + 2.0f, ay + 4.0f);
+            a.addTriangle (ax + 1.0f, ay - 4.5f, ax + kArrowW - 5.0f, ay, ax + 1.0f, ay + 4.5f);
             g.setColour (Colours::textDim);
             g.fillPath (a);
         }
@@ -155,7 +217,14 @@ void ChainStrip::mouseDrag (const juce::MouseEvent& e)
 
 void ChainStrip::mouseUp (const juce::MouseEvent&)
 {
-    if (dragSlot >= 0 && moved) commitOrder();
+    if (dragSlot >= 0 && moved)
+        commitOrder();
+    else if (dragSlot >= 0)
+    {
+        // A click: edit that module.
+        selectedModule = (Module) order[dragSlot];
+        if (onModuleSelected) onModuleSelected (selectedModule);
+    }
     dragSlot = -1;
     moved = false;
     repaint();

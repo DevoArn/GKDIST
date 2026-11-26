@@ -67,10 +67,11 @@ inline double lfoDivBeats (int idx) noexcept
 enum class NoiseType : int { White = 0, Pink, Crackle, Count };
 enum class ClipMode : int { Off = 0, Soft, Hard, Limit, Count };
 
-constexpr int kNumRegionSlopes = 3;   // 12, 24, 48 dB/oct
-inline int regionSlopeDb (int idx) noexcept { static constexpr int s[] = { 12, 24, 48 }; return s[juce::jlimit (0, 2, idx)]; }
-/** Slope index in FilterDesign's table (6,12,18,24,30,36,48,...). */
-inline int regionSlopeDesignIdx (int idx) noexcept { static constexpr int s[] = { 1, 3, 6 }; return s[juce::jlimit (0, 2, idx)]; }
+constexpr int kNumRegionSlopes = 4;   // 12, 24, 48 dB/oct, brickwall
+constexpr int kRegionBrickwall = 3;
+constexpr int kNumFilterSlopes = 3;   // band filter: 12, 24, 48 dB/oct
+/** Slope index in FilterDesign's table (6,12,18,24,30,36,48,72,96,brickwall). */
+inline int regionSlopeDesignIdx (int idx) noexcept { static constexpr int s[] = { 1, 3, 6, kBrickwallIdx }; return s[juce::jlimit (0, 3, idx)]; }
 
 juce::StringArray shapeNames();
 juce::StringArray regionSlopeNames();

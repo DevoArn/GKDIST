@@ -8,7 +8,7 @@ namespace gkd
 {
 
 juce::StringArray shapeNames()        { return { "Bell", "Low", "High", "Full" }; }
-juce::StringArray regionSlopeNames()  { return { "12 dB/oct", "24 dB/oct", "48 dB/oct" }; }
+juce::StringArray regionSlopeNames()  { return { "12 dB/oct", "24 dB/oct", "48 dB/oct", "Brickwall" }; }
 juce::StringArray distTypeNames()     { return { "Soft Clip", "Hard Clip", "Tube", "Tape", "Transistor", "Diode", "Fuzz", "Foldback", "Rectify", "Bitcrush" }; }
 juce::StringArray bandFilterNames()   { return { "Off", "Low Pass", "High Pass", "Band Pass", "Notch", "Peak", "Low Shelf", "High Shelf", "Tilt" }; }
 juce::StringArray filterSlopeNames()  { return { "12 dB/oct", "24 dB/oct", "48 dB/oct" }; }
@@ -421,7 +421,7 @@ BandParams ParamRefs::readBand (int b) const noexcept
     p.bias        = clampD (r[bpBias], -1.0, 1.0);
     p.autoGain    = on (r[bpAutoGain]);
     p.filterType  = (BandFilter) idx (r[bpFilterType], (int) BandFilter::Count);
-    p.filterSlope = idx (r[bpFilterSlope], kNumRegionSlopes);
+    p.filterSlope = idx (r[bpFilterSlope], kNumFilterSlopes);
     p.filterFreq  = clampD (r[bpFilterFreq], 20.0, 20000.0);
     p.filterRes   = clampD (r[bpFilterRes], 0.1, 10.0);
     p.filterGainDb = clampD (r[bpFilterGain], -24.0, 24.0);

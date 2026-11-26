@@ -8,6 +8,7 @@
 #include "Dynamics.h"
 #include "Modules.h"
 #include "Effects.h"
+#include "RegionDesign.h"
 
 namespace gkd::dsp
 {
@@ -60,6 +61,14 @@ public:
     float dynAmount() const noexcept { return (float) amount; }
     float compGainReduction() const noexcept { return keyCompOn ? (float) comp.gainReductionDb() : 0.0f; }
     BandTelemetry telemetry() const noexcept;
+    /** RMS of this band's change to the signal since the last call (0 when silent / bypassed). */
+    float takeEffectRms() noexcept
+    {
+        const float r = effectCount > 0 ? (float) std::sqrt (effectAcc / (double) effectCount) : 0.0f;
+        effectAcc = 0.0;
+        effectCount = 0;
+        return std::isfinite (r) ? r : 0.0f;
+    }
 
 private:
     struct Key
@@ -124,6 +133,8 @@ private:
     // Telemetry
     double effDriveDb = 0, effWet = 0, effGainDb = 0, detLevelDb = -100.0;
     double levelEnv = 0.0, levelDecay = 0.9999;
+    double effectAcc = 0.0;
+    int effectCount = 0;
 };
 
 } // namespace gkd::dsp

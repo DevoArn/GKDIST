@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "DistDisplay.h"
+#include "../dsp/RegionDesign.h"
 #include <cstring>
 
 namespace gkd::ui
@@ -199,12 +200,7 @@ void DistDisplay::updateRegions()
             r.mag.fill (1.0f);
             continue;
         }
-        dsp::DesignParams d;
-        d.freq = f;
-        d.slopeIdx = regionSlopeDesignIdx (p.slope);
-        d.type = p.shape == Shape::Bell ? FilterType::BandPass : (p.shape == Shape::Low ? FilterType::HighCut : FilterType::LowCut);
-        d.q = p.shape == Shape::Bell ? q : kDefaultQ;
-        const auto a = dsp::designAnalog (d, fs);
+        const auto a = dsp::designRegionFilter (p.shape, f, q, p.slope, fs);
         for (int i = 0; i < kSpecPoints; ++i)
             r.mag[(size_t) i] = (float) juce::jlimit (0.0, 1.0, a.mag (dsp::kTwoPi * pointFreq (i) / fs));
     }

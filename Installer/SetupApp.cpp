@@ -322,6 +322,14 @@ static Result uninstall (const Options& opt, bool removeUserData, const Log& log
         const File docs = File::getSpecialLocation (File::userDocumentsDirectory).getChildFile (kProduct);
         if (docs.isDirectory() && docs.deleteRecursively())
             log ("  " + docs.getFullPathName() + " (presets)");
+        // Colour theme setting (only our own file; the folder only if it is then empty)
+        const File settingsDir = File::getSpecialLocation (File::userApplicationDataDirectory).getChildFile (kProduct);
+        const File settingsFile = settingsDir.getChildFile (kProduct + ".settings");
+        if (settingsFile.existsAsFile() && settingsFile.deleteFile())
+        {
+            log ("  " + settingsFile.getFullPathName() + " (settings)");
+            settingsDir.deleteFile();   // only succeeds when empty
+        }
     }
 
     const File uninst = appDir.getChildFile (kUninstallerName);

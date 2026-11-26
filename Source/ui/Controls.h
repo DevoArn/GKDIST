@@ -74,6 +74,21 @@ private:
     juce::Colour colour = Colours::accent;
 };
 
+/** Response of a band filter, 20 Hz - 20 kHz, +-24 dB. */
+class ResponseCurve : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    void set (const BandParams& p, double sampleRate, juce::Colour colour);
+    void paint (juce::Graphics&) override;
+
+private:
+    static constexpr int kPoints = 160;
+    double key[7] {};
+    bool on = false;
+    std::array<float, kPoints> db {};
+    juce::Colour colour = Colours::accent;
+};
+
 /** Small horizontal meter (gain reduction / dynamics amount). */
 class Meter : public juce::Component
 {
