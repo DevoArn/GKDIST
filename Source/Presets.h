@@ -19,6 +19,7 @@ public:
     StateBuilder& set (const juce::String& id, float value);
     StateBuilder& band (int b, int index, float value) { return set (bandParamId (b, index), value); }
     StateBuilder& global (int index, float value) { return set (globalParamId (index), value); }
+    StateBuilder& mod (int slot, int index, float value) { return set (modParamId (slot, index), value); }
     /** Enables band b with a region and distortion. */
     StateBuilder& add (int b, Shape shape, double freq, double q, DistType type, double driveDb, double wetPercent = 100.0);
 

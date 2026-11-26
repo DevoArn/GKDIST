@@ -476,7 +476,14 @@ static void testAutomationStress()
                     p.slope = rng.nextInt (3);
                     p.type = (DistType) rng.nextInt ((int) DistType::Count);
                     p.driveDb = rng.nextDouble() * 48.0; p.bias = rng.nextDouble() * 2.0 - 1.0; p.autoGain = rng.nextBool();
-                    p.filterType = (BandFilter) rng.nextInt ((int) BandFilter::Count); p.filterPost = rng.nextBool();
+                    p.filterType = (BandFilter) rng.nextInt ((int) BandFilter::Count); p.filterSlope = rng.nextInt (3);
+                    p.filterGainDb = -24.0 + 48.0 * rng.nextDouble();
+                    p.chainCode = rng.nextInt (kNumChainOrders); decodeChainOrder (p.chainCode, p.order);
+                    p.fxType = (FxType) rng.nextInt ((int) FxType::Count); p.fxRate = 0.02 * std::pow (1000.0, rng.nextDouble());
+                    p.fxDepth = rng.nextDouble(); p.fxFeedback = -0.95 + 1.9 * rng.nextDouble(); p.fxMix = rng.nextDouble();
+                    p.pan = rng.nextDouble() * 2.0 - 1.0; p.mute = rng.nextFloat() < 0.1f;
+                    p.detMode = (DetMode) rng.nextInt ((int) DetMode::Count);
+                    p.detFreq = 20.0 * std::pow (1000.0, rng.nextDouble()); p.detQ = 0.1 * std::pow (200.0, rng.nextDouble());
                     p.filterFreq = 20.0 * std::pow (1000.0, rng.nextDouble()); p.filterRes = 0.1 * std::pow (100.0, rng.nextDouble());
                     p.phat = rng.nextDouble(); p.noiseDb = -80.0 + rng.nextDouble() * 80.0;
                     p.noiseType = (NoiseType) rng.nextInt ((int) NoiseType::Count); p.noiseFollow = rng.nextDouble();
@@ -557,6 +564,7 @@ static void testPerformance()
             if (everything)
             {
                 p.filterType = BandFilter::LowPass; p.phat = 0.3; p.noiseDb = -60.0; p.compOn = true; p.clipMode = ClipMode::Soft;
+                p.fxType = FxType::Phaser; p.fxMix = 0.5; p.dynOn = true; p.detMode = DetMode::Bell;
                 p.dynOn = true; p.dynDrive = 12.0;
             }
         }
@@ -586,6 +594,266 @@ static void testPerformance()
     CHECK (worst < 50.0, "24 bands with all modules at 4x need %.1f %% of a core", worst);
 }
 
+// ---------------------------------------------------------------------------
+static BandParams linearFullBand()
+{
+    // Full band, soft clip at 0 dB drive on a tiny signal: practically linear.
+    BandParams p;
+    p.used = true; p.shape = Shape::Full; p.type = DistType::SoftClip; p.driveDb = 0.0; p.autoGain = false; p.wet = 1.0;
+    return p;
+}
+
+static void testChainAndFilter()
+{
+    std::printf ("[12] Effect chain order and band filter\n");
+    const double fs = 48000.0;
+    const int n = 32768, start = n / 2, len = 8192;
+
+    // Every code decodes to a distinct permutation and encodes back.
+    {
+        bool ok = true;
+        std::vector<int> seen (kNumChainOrders, 0);
+        for (int c = 0; c < kNumChainOrders && ok; ++c)
+        {
+            int o[kNumModules];
+            decodeChainOrder (c, o);
+            int mask = 0;
+            for (int m : o) mask |= 1 << m;
+            ok = mask == (1 << kNumModules) - 1 && encodeChainOrder (o) == c;
+        }
+        int def[kNumModules];
+        decodeChainOrder (0, def);
+        for (int i = 0; i < kNumModules; ++i) ok = ok && def[i] == i;
+        std::printf ("  %d chain orders round-trip: %s\n", kNumChainOrders, ok ? "yes" : "NO");
+        CHECK (ok, "chain order encode / decode");
+    }
+
+    auto gainAt = [&] (BandParams p, double f) -> double
+    {
+        Setup s;
+        s.band (0) = p;
+        DistEngine e;
+        e.prepare (fs, 512, 2, 0);
+        Stereo y = sine (fs, n, { { f, 0.001 } });
+        run (e, s, y);
+        return db (toneAmp (y.L, start, len, f, fs) / 0.001);
+    };
+
+    BandParams p = linearFullBand();
+    p.filterType = BandFilter::Peak; p.filterFreq = 1000.0; p.filterRes = 1.0; p.filterGainDb = 12.0;
+    const double peak = gainAt (p, 1000.0), peakOff = gainAt (p, 100.0);
+    p.filterType = BandFilter::Notch; p.filterRes = 2.0;
+    const double notch = gainAt (p, 1000.0);
+    p.filterType = BandFilter::LowPass; p.filterFreq = 500.0; p.filterRes = kDefaultQ; p.filterSlope = 1;   // 24 dB/oct
+    const double lp2k = gainAt (p, 2000.0), lp100 = gainAt (p, 100.0);
+    p.filterType = BandFilter::HighShelf; p.filterFreq = 2000.0; p.filterGainDb = -9.0; p.filterSlope = 0;
+    const double shelf = gainAt (p, 12000.0);
+    std::printf ("  peak +12 dB @1k: %.2f dB (100 Hz %.2f), notch @1k: %.1f dB, LP 24 dB/oct @500: 2k %.1f dB / 100 Hz %.2f, high shelf -9: %.2f dB\n",
+                 peak, peakOff, notch, lp2k, lp100, shelf);
+    CHECK (std::abs (peak - 12.0) < 0.3 && std::abs (peakOff) < 0.5, "peak filter gain (%.2f dB)", peak);
+    CHECK (notch < -25.0, "notch depth (%.1f dB)", notch);
+    CHECK (lp2k < -40.0 && std::abs (lp100) < 0.2, "low pass 24 dB/oct (%.1f dB at 2 octaves)", lp2k);
+    CHECK (std::abs (shelf + 9.0) < 0.5, "high shelf gain (%.2f dB)", shelf);
+
+    // Filter before vs. after a hard clipper: a low pass after the distortion removes the harmonics.
+    auto h3 = [&] (bool filterFirst) -> double
+    {
+        Setup s;
+        auto& b = s.band (0);
+        b = linearFullBand();
+        b.type = DistType::HardClip; b.driveDb = 24.0;
+        b.filterType = BandFilter::LowPass; b.filterFreq = 1800.0; b.filterSlope = 2; b.filterRes = kDefaultQ;
+        int o[kNumModules] { 0, 1, 2, 3, 4, 5, 6 };
+        if (! filterFirst) { o[0] = (int) Module::Distortion; o[1] = (int) Module::Filter; }
+        b.chainCode = encodeChainOrder (o);
+        decodeChainOrder (b.chainCode, b.order);
+        DistEngine e;
+        e.prepare (fs, 512, 2, 1);
+        Stereo y = sine (fs, n, { { 1000.0, 0.3 } });
+        run (e, s, y);
+        return db (toneAmp (y.L, start, len, 3000.0, fs) / toneAmp (y.L, start, len, 1000.0, fs));
+    };
+    const double pre = h3 (true), post = h3 (false);
+    std::printf ("  3rd harmonic with LP 48 dB/oct at 1.8 kHz: filter -> clip %.1f dB, clip -> filter %.1f dB\n", pre, post);
+    CHECK (pre > -20.0 && post < pre - 25.0, "chain order changes the result (%.1f vs %.1f dB)", pre, post);
+}
+
+static void testFxPanMute()
+{
+    std::printf ("[13] Band FX, pan, mute\n");
+    const double fs = 48000.0;
+    const int n = 48000, start = n / 2, len = 16384;
+    const auto names = fxTypeNames();
+    for (int t = 1; t < (int) FxType::Count; ++t)
+    {
+        Setup s;
+        auto& b = s.band (0);
+        b = linearFullBand();
+        b.fxType = (FxType) t; b.fxRate = 2.0; b.fxDepth = 1.0; b.fxFeedback = 0.9; b.fxMix = 1.0;
+        DistEngine e;
+        e.prepare (fs, 512, 2, 1);
+        const Stereo x = sine (fs, n, { { 300.0, 0.002 }, { 1000.0, 0.002 }, { 3100.0, 0.002 } });
+        Stereo y = x;
+        run (e, s, y);
+        const int lat = e.latencySamples();
+        double diff = 0.0, ref = 0.0, peak = 0.0;
+        bool finite = true;
+        for (int i = start; i < n; ++i)
+        {
+            for (int c = 0; c < 2; ++c)
+            {
+                const float v = c == 0 ? y.L[(size_t) i] : y.R[(size_t) i];
+                const float d = c == 0 ? x.L[(size_t) (i - lat)] : x.R[(size_t) (i - lat)];
+                finite = finite && std::isfinite (v);
+                diff += (double) (v - d) * (v - d);
+                ref += (double) d * d;
+                peak = std::max (peak, (double) std::abs (v));
+            }
+        }
+        const double changed = 10.0 * std::log10 (diff / ref + 1.0e-30);
+        std::printf ("  %-9s change %.1f dB re dry, peak %.4f\n", names[t].toRawUTF8(), changed, peak);
+        CHECK (finite && peak < 0.02 && changed > -30.0, "%s is active and stable", names[t].toRawUTF8());
+    }
+
+    // Tremolo depth 100 %: the level swings by more than 20 dB.
+    {
+        Setup s;
+        auto& b = s.band (0);
+        b = linearFullBand();
+        b.fxType = FxType::Tremolo; b.fxRate = 4.0; b.fxDepth = 1.0; b.fxMix = 1.0;
+        DistEngine e;
+        e.prepare (fs, 512, 2, 0);
+        Stereo y = sine (fs, n, { { 1000.0, 0.002 } });
+        run (e, s, y);
+        double lo = 1.0e9, hi = 0.0;
+        for (int w = start; w + 240 < n; w += 240) { const double r = rms (y.L, w, 240); lo = std::min (lo, r); hi = std::max (hi, r); }
+        std::printf ("  tremolo swing %.1f dB\n", db (hi / std::max (lo, 1.0e-12)));
+        CHECK (db (hi / std::max (lo, 1.0e-12)) > 20.0, "tremolo depth");
+    }
+
+    auto rmsLR = [&] (BandParams p, double& l, double& r)
+    {
+        Setup s;
+        s.band (0) = p;
+        DistEngine e;
+        e.prepare (fs, 512, 2, 0);
+        Stereo y = sine (fs, n, { { 700.0, 0.002 } });
+        run (e, s, y);
+        l = rms (y.L, start, len);
+        r = rms (y.R, start, len);
+    };
+    double l = 0, r = 0;
+    BandParams p = linearFullBand();
+    p.pan = -1.0;
+    rmsLR (p, l, r);
+    std::printf ("  full band panned hard left: L %.1f dB, R %.1f dB\n", db (l), db (r));
+    CHECK (db (r) < db (l) - 100.0, "hard-left pan removes the right channel (%.1f dB)", db (r));
+    p = linearFullBand();
+    p.mute = true;
+    rmsLR (p, l, r);
+    std::printf ("  muted full band: L %.1f dB, R %.1f dB\n", db (l), db (r));
+    CHECK (db (l) < -150.0 && db (r) < -150.0, "mute removes the band");
+}
+
+static void testDetectorBell()
+{
+    std::printf ("[14] Dynamics detector bell\n");
+    const double fs = 48000.0;
+    const int n = 24000;
+    auto amountFor = [&] (double toneHz, DetMode mode) -> float
+    {
+        Setup s;
+        auto& b = s.band (0);
+        b.shape = Shape::Bell; b.freq = 1000.0; b.q = 1.0; b.driveDb = 6.0; b.wet = 0.0;
+        b.dynOn = true; b.dynWet = 1.0; b.dynThresh = -20.0; b.dynAttack = 2.0; b.dynRelease = 50.0;
+        b.detMode = mode; b.detFreq = 5000.0; b.detQ = 4.0;
+        DistEngine e;
+        e.prepare (fs, 512, 2, 0);
+        Stereo y = sine (fs, n, { { toneHz, 0.5 } });
+        run (e, s, y);
+        return s.dyn[0];
+    };
+    const float own1k = amountFor (1000.0, DetMode::Bell), own5k = amountFor (5000.0, DetMode::Bell);
+    const float reg1k = amountFor (1000.0, DetMode::Region), reg5k = amountFor (5000.0, DetMode::Region);
+    std::printf ("  own bell at 5 kHz: 1 kHz tone -> %.2f, 5 kHz tone -> %.2f;  band region (1 kHz): 1 kHz -> %.2f, 5 kHz -> %.2f\n",
+                 own1k, own5k, reg1k, reg5k);
+    CHECK (own1k < 0.02 && own5k > 0.98, "own detector bell reacts only to its frequency");
+    CHECK (reg1k > 0.98 && reg5k < 0.3, "region detector follows the band");
+}
+
+static void testModulation()
+{
+    std::printf ("[15] Modulation (LFOs, envelopes, matrix)\n");
+    const double fs = 48000.0;
+    GlobalParams g;
+    ModSlot slots[kNumModSlots];
+    BandMod mods[kNumBands];
+    slots[0].source = ModSource::Lfo1; slots[0].band = 2; slots[0].target = ModTarget::Drive; slots[0].amount = 0.5;
+    g.lfoShape[0] = LfoShape::Sine; g.lfoRate[0] = 1.0;
+
+    ModMatrix m;
+    m.prepare (fs);
+    std::vector<float> silence (32, 0.0f);
+    for (int i = 0; i < 12000 / 32; ++i)   // 0.25 s
+        m.advance (32, silence.data(), silence.data(), nullptr, nullptr, g, slots, mods);
+    std::printf ("  LFO 1 (1 Hz sine) after 0.25 s: %.3f -> band 3 drive offset %.2f dB, band 1 %.2f dB\n",
+                 m.lfoValue (0), mods[2].driveDb, mods[0].driveDb);
+    CHECK (std::abs (m.lfoValue (0) - 1.0) < 0.01 && std::abs (mods[2].driveDb - 24.0) < 0.3 && mods[0].driveDb == 0.0,
+           "LFO routing to one band");
+
+    // Tempo sync: 120 BPM, 1/4 note: after 0.125 s (a quarter of a beat) the phase is 0.25.
+    g.lfoSync[0] = true; g.lfoDiv[0] = 6;
+    ModMatrix ms;
+    ms.prepare (fs);
+    ms.setTransport (true, 120.0, 0.0);
+    for (int i = 0; i < 6000 / 30; ++i)
+        ms.advance (30, silence.data(), silence.data(), nullptr, nullptr, g, slots, mods);
+    std::printf ("  synced LFO phase after a 1/16 at 120 BPM: %.4f (expected 0.25)\n", ms.lfoPhase (0));
+    CHECK (std::abs (ms.lfoPhase (0) - 0.25) < 0.002, "tempo-synced LFO phase");
+
+    // Input envelope: a 0.5-amplitude tone -> -6 dBFS -> 0.9 on the 0..1 scale.
+    slots[1].source = ModSource::InputEnv; slots[1].band = -1; slots[1].target = ModTarget::Wet; slots[1].amount = 1.0;
+    std::vector<float> tone (32);
+    ModMatrix me;
+    me.prepare (fs);
+    for (int blk = 0; blk < 300; ++blk)
+    {
+        for (int i = 0; i < 32; ++i) tone[(size_t) i] = (float) (0.5 * std::sin (2.0 * kPi * 1000.0 * (blk * 32 + i) / fs));
+        me.advance (32, tone.data(), tone.data(), nullptr, nullptr, g, slots, mods);
+    }
+    std::printf ("  input envelope of a -6 dBFS tone: %.3f, wet offset on band 10: %.3f\n", me.sourceValue (ModSource::InputEnv), mods[9].wet);
+    CHECK (std::abs (me.sourceValue (ModSource::InputEnv) - 0.9) < 0.02 && std::abs (mods[9].wet - me.sourceValue (ModSource::InputEnv)) < 1.0e-9,
+           "envelope source on all bands");
+
+    // In the engine: LFO-modulated drive shows up in the band telemetry.
+    {
+        Setup s;
+        auto& b = s.band (0);
+        b = linearFullBand();
+        b.driveDb = 24.0;
+        GlobalParams& gg = s.g;
+        gg.lfoShape[0] = LfoShape::Square; gg.lfoRate[0] = 2.0;
+        ModSlot sl[kNumModSlots];
+        sl[0].source = ModSource::Lfo1; sl[0].band = 0; sl[0].target = ModTarget::Drive; sl[0].amount = 0.25;   // +-12 dB
+        ModMatrix mm;
+        mm.prepare (fs);
+        BandTelemetry tel[kNumBands];
+        s.in.mod = &mm; s.in.modSlots = sl; s.in.telemetryOut = tel;
+        DistEngine e;
+        e.prepare (fs, 512, 2, 0);
+        double lo = 1.0e9, hi = -1.0e9;
+        for (int blk = 0; blk < 200; ++blk)
+        {
+            Stereo y = sine (fs, 240, { { 500.0, 0.01 } });
+            run (e, s, y, 240);
+            lo = std::min (lo, (double) tel[0].driveDb);
+            hi = std::max (hi, (double) tel[0].driveDb);
+        }
+        std::printf ("  engine: modulated drive ranges %.1f .. %.1f dB (expected 12 .. 36)\n", lo, hi);
+        CHECK (std::abs (lo - 12.0) < 0.6 && std::abs (hi - 36.0) < 0.6, "drive modulation in the engine");
+    }
+}
+
 int main()
 {
     juce::ScopedNoDenormals noDenormals;
@@ -599,6 +867,10 @@ int main()
     testSolo();
     testAutomationStress();
     testClickFreeSwitching();
+    testChainAndFilter();
+    testFxPanMute();
+    testDetectorBell();
+    testModulation();
     testPerformance();
     std::printf ("\n%s (%d failure%s)\n", failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED", failures, failures == 1 ? "" : "s");
     return failures == 0 ? 0 : 1;

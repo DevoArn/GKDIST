@@ -10,8 +10,60 @@ namespace gkd
 juce::StringArray shapeNames()        { return { "Bell", "Low", "High", "Full" }; }
 juce::StringArray regionSlopeNames()  { return { "12 dB/oct", "24 dB/oct", "48 dB/oct" }; }
 juce::StringArray distTypeNames()     { return { "Soft Clip", "Hard Clip", "Tube", "Tape", "Transistor", "Diode", "Fuzz", "Foldback", "Rectify", "Bitcrush" }; }
-juce::StringArray bandFilterNames()   { return { "Off", "Low Pass", "High Pass", "Band Pass" }; }
-juce::StringArray filterPosNames()    { return { "Pre", "Post" }; }
+juce::StringArray bandFilterNames()   { return { "Off", "Low Pass", "High Pass", "Band Pass", "Notch", "Peak", "Low Shelf", "High Shelf", "Tilt" }; }
+juce::StringArray filterSlopeNames()  { return { "12 dB/oct", "24 dB/oct", "48 dB/oct" }; }
+juce::StringArray fxTypeNames()       { return { "Off", "Phaser", "Flanger", "Chorus", "Vibrato", "Tremolo", "Auto Pan" }; }
+juce::StringArray detModeNames()      { return { "Band Region", "Own Bell" }; }
+juce::StringArray modSourceNames()    { return { "Off", "LFO 1", "LFO 2", "Input Envelope", "Side-chain Env" }; }
+juce::StringArray modTargetNames()
+{
+    return { "Drive", "Wet", "Gain", "Frequency", "Q", "Bias", "Filter Freq", "Filter Reso", "Filter Gain",
+             "Phat", "Noise", "FX Rate", "FX Depth", "FX Mix", "Pan" };
+}
+juce::StringArray modBandNames()
+{
+    juce::StringArray s { "All Bands" };
+    for (int b = 1; b <= kNumBands; ++b) s.add ("Band " + juce::String (b));
+    return s;
+}
+juce::StringArray lfoShapeNames()     { return { "Sine", "Triangle", "Saw Up", "Saw Down", "Square", "Sample & Hold", "Smooth Random" }; }
+juce::StringArray lfoDivNames()       { return { "1/32", "1/16T", "1/16", "1/8T", "1/8", "1/4T", "1/4", "1/2", "1 bar", "2 bars", "4 bars" }; }
+juce::StringArray moduleNames()       { return { "FILTER", "DRIVE", "PHAT", "NOISE", "FX", "COMP", "CLIP" }; }
+
+void decodeChainOrder (int code, int order[kNumModules]) noexcept
+{
+    code = juce::jlimit (0, kNumChainOrders - 1, code);
+    int pool[kNumModules];
+    for (int i = 0; i < kNumModules; ++i) pool[i] = i;
+    int left = kNumModules;
+    int fact = 720;   // 6!
+    for (int i = 0; i < kNumModules; ++i)
+    {
+        const int digit = fact > 0 ? code / fact : 0;
+        if (fact > 0) code %= fact;
+        order[i] = pool[digit];
+        for (int k = digit; k < left - 1; ++k) pool[k] = pool[k + 1];
+        --left;
+        fact = (kNumModules - 1 - i) > 1 ? fact / (kNumModules - 1 - i) : 0;
+    }
+}
+
+int encodeChainOrder (const int order[kNumModules]) noexcept
+{
+    bool usedMod[kNumModules] {};
+    int code = 0, fact = 720;
+    for (int i = 0; i < kNumModules; ++i)
+    {
+        const int m = juce::jlimit (0, kNumModules - 1, order[i]);
+        if (usedMod[m]) return 0;   // not a permutation
+        int digit = 0;
+        for (int k = 0; k < m; ++k) if (! usedMod[k]) ++digit;
+        usedMod[m] = true;
+        code += digit * fact;
+        fact = (kNumModules - 1 - i) > 1 ? fact / (kNumModules - 1 - i) : 0;
+    }
+    return code;
+}
 juce::StringArray noiseTypeNames()    { return { "White", "Pink", "Crackle" }; }
 juce::StringArray clipModeNames()     { return { "Off", "Soft Clip", "Hard Clip", "Limit" }; }
 juce::StringArray oversamplingNames() { return { "Off", "2x", "4x", "8x" }; }
@@ -22,21 +74,37 @@ juce::String ID::band (int bandIndex, const char* suffix)
     return "b" + juce::String (bandIndex + 1) + "_" + suffix;
 }
 
+juce::String ID::modSlot (int slot, const char* suffix)
+{
+    return "m" + juce::String (slot + 1) + "_" + suffix;
+}
+
 // ---------------------------------------------------------------------------
+juce::String formatNumber (double v, int decimals)
+{
+    if (! std::isfinite (v)) v = 0.0;
+    if (decimals <= 0)
+    {
+        const auto r = (long long) std::llround (v);
+        return juce::String (r == 0 ? 0LL : r);   // no "-0"
+    }
+    return juce::String (v, decimals);
+}
+
 juce::String formatFrequency (double hz)
 {
     if (hz >= 1000.0)
     {
         const double k = hz / 1000.0;
-        return juce::String (k, k >= 10.0 ? 1 : 2) + " kHz";
+        return formatNumber (k, k >= 10.0 ? 1 : 2) + " kHz";
     }
-    return juce::String (hz, hz >= 100.0 ? 0 : 1) + " Hz";
+    return formatNumber (hz, hz >= 100.0 ? 0 : 1) + " Hz";
 }
 
 juce::String formatDb (double db, bool sign)
 {
     if (std::abs (db) < 0.005) db = 0.0;
-    return (sign && db > 0.0 ? "+" : "") + juce::String (db, 1) + " dB";
+    return (sign && db > 0.0 ? "+" : "") + formatNumber (db, 1) + " dB";
 }
 
 juce::String noteNameForFrequency (double hz)
@@ -61,8 +129,8 @@ static double parseNumber (const juce::String& text)
 // ---------------------------------------------------------------------------
 namespace
 {
-    enum class Kind { Bool, Choice, Float };
-    enum class Unit { None, Hz, Db, NoiseDb, Percent, Ms, Q, Ratio, Bias };
+    enum class Kind { Bool, Choice, Float, Order };
+    enum class Unit { None, Hz, Db, NoiseDb, Percent, Ms, Q, Ratio, Bias, Rate, Pan };
 
     struct Spec
     {
@@ -91,9 +159,10 @@ namespace
         { ID::bias,        "Bias",              Kind::Float,  -1.0f, 1.0f, 0.0f, false, Unit::Bias, noChoices },
         { ID::autoGain,    "Auto Gain",         Kind::Bool,   0, 1, 1, false, Unit::None, noChoices },
         { ID::filterType,  "Filter Type",       Kind::Choice, 0, 0, 0, false, Unit::None, bandFilterNames },
-        { ID::filterPos,   "Filter Position",   Kind::Choice, 0, 0, 0, false, Unit::None, filterPosNames },
+        { ID::filterSlope, "Filter Slope",      Kind::Choice, 0, 0, 0, false, Unit::None, filterSlopeNames },
         { ID::filterFreq,  "Filter Frequency",  Kind::Float,  20.0f, 20000.0f, 5000.0f, true, Unit::Hz, noChoices },
         { ID::filterRes,   "Filter Resonance",  Kind::Float,  0.1f, 10.0f, (float) kDefaultQ, true, Unit::Q, noChoices },
+        { ID::filterGain,  "Filter Gain",       Kind::Float,  -24.0f, 24.0f, 0.0f, false, Unit::Db, noChoices },
         { ID::phat,        "Phat",              Kind::Float,  0.0f, 100.0f, 0.0f, false, Unit::Percent, noChoices },
         { ID::noiseLevel,  "Noise Level",       Kind::Float,  kNoiseOffDb, 0.0f, kNoiseOffDb, false, Unit::NoiseDb, noChoices },
         { ID::noiseType,   "Noise Type",        Kind::Choice, 0, 0, 0, false, Unit::None, noiseTypeNames },
@@ -116,6 +185,17 @@ namespace
         { ID::dynGain,     "Dyn Gain Range",    Kind::Float,  -24.0f, 24.0f, 0.0f, false, Unit::Db, noChoices },
         { ID::dynDrive,    "Dyn Drive Range",   Kind::Float,  -48.0f, 48.0f, 0.0f, false, Unit::Db, noChoices },
         { ID::dynWet,      "Dyn Wet Range",     Kind::Float,  -100.0f, 100.0f, 0.0f, false, Unit::Percent, noChoices },
+        { ID::fxType,      "FX Type",           Kind::Choice, 0, 0, 0, false, Unit::None, fxTypeNames },
+        { ID::fxRate,      "FX Rate",           Kind::Float,  0.02f, 20.0f, 0.5f, true, Unit::Rate, noChoices },
+        { ID::fxDepth,     "FX Depth",          Kind::Float,  0.0f, 100.0f, 50.0f, false, Unit::Percent, noChoices },
+        { ID::fxFeedback,  "FX Feedback",       Kind::Float,  -95.0f, 95.0f, 0.0f, false, Unit::Percent, noChoices },
+        { ID::fxMix,       "FX Mix",            Kind::Float,  0.0f, 100.0f, 50.0f, false, Unit::Percent, noChoices },
+        { ID::chainOrder,  "Chain Order",       Kind::Order,  0, (float) (kNumChainOrders - 1), 0, false, Unit::None, noChoices },
+        { ID::pan,         "Pan",               Kind::Float,  -100.0f, 100.0f, 0.0f, false, Unit::Pan, noChoices },
+        { ID::mute,        "Mute",              Kind::Bool,   0, 1, 0, false, Unit::None, noChoices },
+        { ID::detMode,     "Dyn Detector",      Kind::Choice, 0, 0, 1, false, Unit::None, detModeNames },
+        { ID::detFreq,     "Dyn Detector Freq", Kind::Float,  20.0f, 20000.0f, 1000.0f, true, Unit::Hz, noChoices },
+        { ID::detQ,        "Dyn Detector Q",    Kind::Float,  0.1f, 20.0f, 1.0f, true, Unit::Q, noChoices },
     };
     static_assert (sizeof (kBandSpecs) / sizeof (kBandSpecs[0]) == kNumBandParams, "band spec table out of sync");
 
@@ -144,8 +224,37 @@ namespace
         { ID::mix,          "Mix",                 Kind::Float,  0.0f, 100.0f, 100.0f, false, Unit::Percent, noChoices },
         { ID::outGain,      "Output",              Kind::Float,  -24.0f, 24.0f, 0.0f, false, Unit::Db, noChoices },
         { ID::bypass,       "Bypass",              Kind::Bool,   0, 1, 0, false, Unit::None, noChoices },
+        { ID::lfo1Rate,     "LFO 1 Rate",          Kind::Float,  0.01f, 20.0f, 1.0f, true, Unit::Rate, noChoices },
+        { ID::lfo1Shape,    "LFO 1 Shape",         Kind::Choice, 0, 0, 0, false, Unit::None, lfoShapeNames },
+        { ID::lfo1Sync,     "LFO 1 Sync",          Kind::Bool,   0, 1, 0, false, Unit::None, noChoices },
+        { ID::lfo1Div,      "LFO 1 Division",      Kind::Choice, 0, 0, 6, false, Unit::None, lfoDivNames },
+        { ID::lfo2Rate,     "LFO 2 Rate",          Kind::Float,  0.01f, 20.0f, 0.25f, true, Unit::Rate, noChoices },
+        { ID::lfo2Shape,    "LFO 2 Shape",         Kind::Choice, 0, 0, 1, false, Unit::None, lfoShapeNames },
+        { ID::lfo2Sync,     "LFO 2 Sync",          Kind::Bool,   0, 1, 0, false, Unit::None, noChoices },
+        { ID::lfo2Div,      "LFO 2 Division",      Kind::Choice, 0, 0, 8, false, Unit::None, lfoDivNames },
+        { ID::envAttack,    "Envelope Attack",     Kind::Float,  0.1f, 500.0f, 10.0f, true, Unit::Ms, noChoices },
+        { ID::envRelease,   "Envelope Release",    Kind::Float,  5.0f, 3000.0f, 150.0f, true, Unit::Ms, noChoices },
     };
     static_assert (sizeof (kGlobalSpecs) / sizeof (kGlobalSpecs[0]) == kNumGlobalParams, "global spec table out of sync");
+
+    // Order must match ModSlotParamIndex.
+    const Spec kModSpecs[] = {
+        { ID::modSource, "Source", Kind::Choice, 0, 0, 0, false, Unit::None, modSourceNames },
+        { ID::modBand,   "Band",   Kind::Choice, 0, 0, 0, false, Unit::None, modBandNames },
+        { ID::modTarget, "Target", Kind::Choice, 0, 0, 0, false, Unit::None, modTargetNames },
+        { ID::modAmount, "Amount", Kind::Float,  -100.0f, 100.0f, 0.0f, false, Unit::Percent, noChoices },
+    };
+    static_assert (sizeof (kModSpecs) / sizeof (kModSpecs[0]) == kNumModSlotParams, "mod spec table out of sync");
+
+    juce::String orderText (int code)
+    {
+        int order[kNumModules];
+        decodeChainOrder (code, order);
+        static const char* shortNames[] = { "Flt", "Drv", "Pht", "Noi", "FX", "Cmp", "Clp" };
+        juce::String t;
+        for (int i = 0; i < kNumModules; ++i) t << (i > 0 ? " > " : "") << shortNames[order[i]];
+        return t;
+    }
 
     juce::NormalisableRange<float> makeRange (const Spec& s)
     {
@@ -165,11 +274,17 @@ namespace
             case Unit::Hz:      return formatFrequency (v);
             case Unit::Db:      return formatDb (v);
             case Unit::NoiseDb: return v <= kNoiseOffDb + 0.01f ? juce::String ("Off") : formatDb (v);
-            case Unit::Percent: return juce::String (v, 0) + " %";
-            case Unit::Ms:      return juce::String (v, v < 10.0f ? 1 : 0) + " ms";
-            case Unit::Q:       return juce::String (v, v < 1.0f ? 3 : 2);
-            case Unit::Ratio:   return juce::String (v, v < 10.0f ? 1 : 0) + ":1";
-            case Unit::Bias:    return juce::String (v, 2);
+            case Unit::Percent: return formatNumber (v, 0) + " %";
+            case Unit::Ms:      return formatNumber (v, v < 10.0f ? 1 : 0) + " ms";
+            case Unit::Q:       return formatNumber (v, v < 1.0f ? 3 : 2);
+            case Unit::Ratio:   return formatNumber (v, v < 10.0f ? 1 : 0) + ":1";
+            case Unit::Bias:    return formatNumber (v, 2);
+            case Unit::Rate:    return formatNumber (v, v < 1.0f ? 2 : (v < 10.0f ? 1 : 0)) + " Hz";
+            case Unit::Pan:
+            {
+                const int pc = (int) std::lround (v);
+                return pc == 0 ? juce::String ("C") : (pc < 0 ? "L" + juce::String (-pc) : "R" + juce::String (pc));
+            }
             case Unit::None:
             default:            return juce::String (v, 2);
         }
@@ -183,6 +298,10 @@ namespace
             return std::make_unique<AudioParameterBool> (pid, name, s.def > 0.5f);
         if (s.kind == Kind::Choice)
             return std::make_unique<AudioParameterChoice> (pid, name, s.choices(), (int) s.def);
+        if (s.kind == Kind::Order)
+            return std::make_unique<AudioParameterInt> (pid, name, (int) s.lo, (int) s.hi, (int) s.def,
+                                                        AudioParameterIntAttributes().withAutomatable (false)
+                                                            .withStringFromValueFunction ([] (int v, int) { return orderText (v); }));
 
         const Unit unit = s.unit;
         auto attr = AudioParameterFloatAttributes()
@@ -190,6 +309,13 @@ namespace
                         .withValueFromStringFunction ([unit] (const String& t)
                         {
                             if (unit == Unit::NoiseDb && t.trim().equalsIgnoreCase ("off")) return kNoiseOffDb;
+                            if (unit == Unit::Pan)
+                            {
+                                const auto u = t.trim().toUpperCase();
+                                if (u == "C") return 0.0f;
+                                const float v = (float) std::abs (parseNumber (u));
+                                return u.startsWith ("L") ? -v : v;
+                            }
                             return (float) parseNumber (t);
                         });
         return std::make_unique<AudioParameterFloat> (pid, name, makeRange (s), s.def, attr);
@@ -206,6 +332,11 @@ juce::String globalParamId (int index)
     return kGlobalSpecs[juce::jlimit (0, kNumGlobalParams - 1, index)].id;
 }
 
+juce::String modParamId (int slot, int index)
+{
+    return ID::modSlot (juce::jlimit (0, kNumModSlots - 1, slot), kModSpecs[juce::jlimit (0, kNumModSlotParams - 1, index)].id);
+}
+
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
@@ -217,8 +348,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
         for (int i = 0; i < kNumBandParams; ++i)
         {
             Spec s = kBandSpecs[i];
-            if (i == bpFreq)   // spread the default frequencies of the slots
-                s.def = (float) (60.0 * std::pow (250.0, b / (double) (kNumBands - 1)));
+            if (i == bpFreq || i == bpDetFreq)   // spread the default frequencies of the slots
+                s.def = (float) juce::jlimit (20.0, 20000.0, 60.0 * std::pow (250.0, b / (double) (kNumBands - 1)));
             group->addChild (makeParam (s, ID::band (b, s.id), prefix + s.name));
         }
         layout.add (std::move (group));
@@ -228,6 +359,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     for (int i = 0; i < kNumGlobalParams; ++i)
         global->addChild (makeParam (kGlobalSpecs[i], kGlobalSpecs[i].id, i == gpBypass ? juce::String ("Bypass") : "Global " + juce::String (kGlobalSpecs[i].name)));
     layout.add (std::move (global));
+
+    for (int m = 0; m < kNumModSlots; ++m)
+    {
+        const auto prefix = "Mod " + juce::String (m + 1) + " ";
+        auto group = std::make_unique<juce::AudioProcessorParameterGroup> ("mod" + juce::String (m + 1), prefix.trim(), "|");
+        for (int i = 0; i < kNumModSlotParams; ++i)
+            group->addChild (makeParam (kModSpecs[i], modParamId (m, i), prefix + kModSpecs[i].name));
+        layout.add (std::move (group));
+    }
     return layout;
 }
 
@@ -245,6 +385,12 @@ void ParamRefs::init (juce::AudioProcessorValueTreeState& s)
         g[i] = s.getRawParameterValue (globalParamId (i));
         jassert (g[i] != nullptr);
     }
+    for (int slot = 0; slot < kNumModSlots; ++slot)
+        for (int i = 0; i < kNumModSlotParams; ++i)
+        {
+            m[slot][i] = s.getRawParameterValue (modParamId (slot, i));
+            jassert (m[slot][i] != nullptr);
+        }
 }
 
 namespace
@@ -275,9 +421,10 @@ BandParams ParamRefs::readBand (int b) const noexcept
     p.bias        = clampD (r[bpBias], -1.0, 1.0);
     p.autoGain    = on (r[bpAutoGain]);
     p.filterType  = (BandFilter) idx (r[bpFilterType], (int) BandFilter::Count);
-    p.filterPost  = idx (r[bpFilterPos], 2) == 1;
+    p.filterSlope = idx (r[bpFilterSlope], kNumRegionSlopes);
     p.filterFreq  = clampD (r[bpFilterFreq], 20.0, 20000.0);
     p.filterRes   = clampD (r[bpFilterRes], 0.1, 10.0);
+    p.filterGainDb = clampD (r[bpFilterGain], -24.0, 24.0);
     p.phat        = clampD (r[bpPhat], 0.0, 100.0) / 100.0;
     p.noiseDb     = clampD (r[bpNoiseLevel], kNoiseOffDb, 0.0);
     p.noiseType   = (NoiseType) idx (r[bpNoiseType], (int) NoiseType::Count);
@@ -300,6 +447,18 @@ BandParams ParamRefs::readBand (int b) const noexcept
     p.dynGain     = clampD (r[bpDynGain], -24.0, 24.0);
     p.dynDrive    = clampD (r[bpDynDrive], -48.0, 48.0);
     p.dynWet      = clampD (r[bpDynWet], -100.0, 100.0) / 100.0;
+    p.fxType      = (FxType) idx (r[bpFxType], (int) FxType::Count);
+    p.fxRate      = clampD (r[bpFxRate], 0.02, 20.0);
+    p.fxDepth     = clampD (r[bpFxDepth], 0.0, 100.0) / 100.0;
+    p.fxFeedback  = clampD (r[bpFxFeedback], -95.0, 95.0) / 100.0;
+    p.fxMix       = clampD (r[bpFxMix], 0.0, 100.0) / 100.0;
+    p.chainCode   = idx (r[bpChainOrder], kNumChainOrders);
+    decodeChainOrder (p.chainCode, p.order);
+    p.pan         = clampD (r[bpPan], -100.0, 100.0) / 100.0;
+    p.mute        = on (r[bpMute]);
+    p.detMode     = (DetMode) idx (r[bpDetMode], (int) DetMode::Count);
+    p.detFreq     = clampD (r[bpDetFreq], 20.0, 20000.0);
+    p.detQ        = clampD (r[bpDetQ], 0.1, 20.0);
     return p;
 }
 
@@ -329,7 +488,28 @@ GlobalParams ParamRefs::readGlobal() const noexcept
     p.mix          = clampD (g[gpMix], 0.0, 100.0) / 100.0;
     p.outGainDb    = clampD (g[gpOutGain], -24.0, 24.0);
     p.bypass       = on (g[gpBypass]);
+    p.lfoRate[0]   = clampD (g[gpLfo1Rate], 0.01, 20.0);
+    p.lfoShape[0]  = (LfoShape) idx (g[gpLfo1Shape], (int) LfoShape::Count);
+    p.lfoSync[0]   = on (g[gpLfo1Sync]);
+    p.lfoDiv[0]    = idx (g[gpLfo1Div], kNumLfoDivs);
+    p.lfoRate[1]   = clampD (g[gpLfo2Rate], 0.01, 20.0);
+    p.lfoShape[1]  = (LfoShape) idx (g[gpLfo2Shape], (int) LfoShape::Count);
+    p.lfoSync[1]   = on (g[gpLfo2Sync]);
+    p.lfoDiv[1]    = idx (g[gpLfo2Div], kNumLfoDivs);
+    p.envAttack    = clampD (g[gpEnvAttack], 0.1, 500.0);
+    p.envRelease   = clampD (g[gpEnvRelease], 5.0, 3000.0);
     return p;
+}
+
+ModSlot ParamRefs::readModSlot (int slot) const noexcept
+{
+    const auto& r = m[juce::jlimit (0, kNumModSlots - 1, slot)];
+    ModSlot s;
+    s.source = (ModSource) idx (r[mpSource], (int) ModSource::Count);
+    s.band   = idx (r[mpBand], kNumBands + 1) - 1;
+    s.target = (ModTarget) idx (r[mpTarget], (int) ModTarget::Count);
+    s.amount = clampD (r[mpAmount], -100.0, 100.0) / 100.0;
+    return s;
 }
 
 } // namespace gkd

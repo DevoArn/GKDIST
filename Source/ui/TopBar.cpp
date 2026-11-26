@@ -177,8 +177,8 @@ void TopBar::showSettingsMenu()
     m.addSubMenu ("Analyser Speed", speed);
     m.addSubMenu ("Analyser Tilt", tilt);
     m.addSeparator();
-    sizes.addItem (50, "Normal (1280 x 860)");
-    sizes.addItem (51, "Large (1600 x 1000)");
+    sizes.addItem (50, "Normal (1280 x 900)");
+    sizes.addItem (51, "Large (1600 x 1040)");
     sizes.addItem (52, "Extra Large (1920 x 1200)");
     m.addSubMenu ("Window Size", sizes);
     m.addItem (4, "GPU Accelerated Drawing (OpenGL)", true, (bool) ui.getProperty ("gpu", true));
@@ -199,7 +199,7 @@ void TopBar::showSettingsMenu()
         if (r >= 20 && r < 24) u.setProperty ("anaRes", r - 20, nullptr);
         if (r >= 30 && r < 35) u.setProperty ("anaSpeed", r - 30, nullptr);
         if (r >= 40 && r < 45) u.setProperty ("anaTilt", tilts[r - 40], nullptr);
-        const int w[] = { 1280, 1600, 1920 }, h[] = { 860, 1000, 1200 };
+        const int w[] = { 1280, 1600, 1920 }, h[] = { 900, 1040, 1200 };
         if (r >= 50 && r < 53 && safe->onResizeRequest) safe->onResizeRequest (w[r - 50], h[r - 50]);
     });
 }

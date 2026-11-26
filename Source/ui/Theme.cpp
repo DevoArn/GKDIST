@@ -13,6 +13,14 @@ juce::Colour bandColour (int band)
     return juce::Colour::fromHSV (hue, 0.62f, 0.98f, 1.0f);
 }
 
+juce::Colour intensityColour (int band, float intensity)
+{
+    const float i = juce::jlimit (0.0f, 1.0f, intensity);
+    const float hue = std::fmod (0.03f + (float) band * 0.61803398875f, 1.0f);
+    // Gentle settings are pale and dim, hard-driven bands fully saturated and bright.
+    return juce::Colour::fromHSV (hue, 0.22f + 0.78f * i, 0.62f + 0.38f * i, 1.0f);
+}
+
 juce::Path shapeIcon (Shape s, juce::Rectangle<float> r)
 {
     juce::Path p;
@@ -224,7 +232,7 @@ void LookAndFeel::drawTooltip (juce::Graphics& g, const juce::String& text, int 
 juce::Label* LookAndFeel::createSliderTextBox (juce::Slider& s)
 {
     auto* l = LookAndFeel_V4::createSliderTextBox (s);
-    l->setFont (font (12.5f));
+    l->setFont (font ((bool) s.getProperties()["compact"] ? 10.5f : 12.5f));
     l->setJustificationType (juce::Justification::centred);
     l->setColour (juce::Label::outlineWhenEditingColourId, Colours::accent);
     l->setColour (juce::Label::backgroundWhenEditingColourId, Colours::bg1);

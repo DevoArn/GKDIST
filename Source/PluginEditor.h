@@ -10,6 +10,8 @@
 #include "ui/Theme.h"
 #include "ui/DistDisplay.h"
 #include "ui/BandPanel.h"
+#include "ui/MixerPanel.h"
+#include "ui/ModPanel.h"
 #include "ui/GlobalPanel.h"
 #include "ui/TopBar.h"
 
@@ -29,8 +31,14 @@ public:
 
     ui::DistDisplay& getDisplay() noexcept { return display; }
     ui::BandPanel& getBandPanel() noexcept { return bandPanel; }
+    ui::MixerPanel& getMixerPanel() noexcept { return mixerPanel; }
+    ui::ModPanel& getModPanel() noexcept { return modPanel; }
 
-    static constexpr int kMinWidth = 1280, kMinHeight = 760;
+    /** Lower area page: 0 = band, 1 = mixer, 2 = modulation. */
+    void showPage (int page);
+    int  getPage() const noexcept { return page; }
+
+    static constexpr int kMinWidth = 1280, kMinHeight = 800;
 
 private:
     void commit() { proc.commitUndoPoint(); }
@@ -42,7 +50,11 @@ private:
     ui::TopBar top;
     ui::DistDisplay display;
     ui::BandPanel bandPanel;
+    ui::MixerPanel mixerPanel;
+    ui::ModPanel modPanel;
     ui::GlobalPanel globalPanel;
+    juce::TextButton tabs[3] { juce::TextButton ("BAND"), juce::TextButton ("MIXER"), juce::TextButton ("MODULATION") };
+    int page = 0;
     std::unique_ptr<juce::TooltipWindow> tooltip;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GKDistEditor)

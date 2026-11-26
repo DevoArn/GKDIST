@@ -157,6 +157,16 @@ void DistEngine::process (float* const* io, int numChannels, int numSamples, con
         const int opos = pos * osFactor;
 
         updateGlobal (g, hn);
+        if (in.mod != nullptr && in.modSlots != nullptr)
+        {
+            const float* scl = in.sidechain != nullptr && in.scChannels > 0 ? in.sidechain[0] + pos : nullptr;
+            const float* scr = in.sidechain != nullptr && in.scChannels > 1 ? in.sidechain[1] + pos : nullptr;
+            in.mod->advance (hn, io[0] + pos, stereo ? io[1] + pos : nullptr, scl, scr, g, in.modSlots, bandMods);
+        }
+        else
+        {
+            for (auto& m : bandMods) m = BandMod();
+        }
         for (int b = 0; b < kNumBands; ++b)
         {
             const auto& p = in.bands[b];
@@ -167,7 +177,7 @@ void DistEngine::process (float* const* io, int numChannels, int numSamples, con
                 dl = in.sidechain[0] + pos;
                 dr = in.scChannels > 1 ? in.sidechain[1] + pos : nullptr;
             }
-            bands[b].update (p, hn, dl, dr);
+            bands[b].update (p, bandMods[b], hn, dl, dr);
         }
 
         float* oL = data[0] + opos;
@@ -301,6 +311,7 @@ void DistEngine::process (float* const* io, int numChannels, int numSamples, con
     {
         if (in.dynAmountOut != nullptr) in.dynAmountOut[b] = bands[b].dynAmount();
         if (in.compGrOut != nullptr) in.compGrOut[b] = bands[b].compGainReduction();
+        if (in.telemetryOut != nullptr) in.telemetryOut[b] = bands[b].telemetry();
     }
 }
 

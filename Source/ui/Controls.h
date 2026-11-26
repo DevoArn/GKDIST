@@ -23,12 +23,15 @@ public:
     void attach (juce::RangedAudioParameter* p);
     void setAccent (juce::Colour c);
     void setCaption (const juce::String& c) { if (c != caption) { caption = c; repaint(); } }
+    /** Smaller caption and value text, for narrow mixer strips. */
+    void setCompact();
 
     juce::Slider slider;
     std::function<void()> onEdit;
 
 private:
     juce::String caption;
+    bool compact = false;
     std::unique_ptr<juce::SliderParameterAttachment> attachment;
 };
 

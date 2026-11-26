@@ -8,6 +8,11 @@
 namespace gkd::dsp
 {
 
+namespace
+{
+    constexpr double kLn2 = 0.69314718055994530942;
+}
+
 void BandProcessor::prepare (double newHostRate, int newOsFactor, int bandIndex)
 {
     hostRate = newHostRate;
@@ -19,11 +24,13 @@ void BandProcessor::prepare (double newHostRate, int newOsFactor, int bandIndex)
     phat.prepare (osRate);
     noise[0].prepare (osRate, 0x1234567u + 7919u * (uint32_t) bandIndex);
     noise[1].prepare (osRate, 0x7654321u + 104729u * (uint32_t) bandIndex);
+    fx.prepare (osRate, 0x9e3779b9u * (uint32_t) (bandIndex + 1));
     comp.prepare (osRate);
     clipper.prepare (osRate);
     det.prepare (hostRate);
     noiseEnvRel = std::exp (-1.0 / (0.05 * osRate));
-    fadeStep = 1.0 / (0.005 * osRate);   // 5 ms cross-fades
+    fadeStep = 1.0 / (0.005 * osRate);              // 5 ms cross-fades
+    levelDecay = std::exp (-1.0 / (0.3 * osRate));  // 300 ms meter decay
     reset();
 }
 
@@ -41,6 +48,7 @@ void BandProcessor::reset()
     phat.reset();
     noise[0].reset();
     noise[1].reset();
+    fx.reset();
     comp.reset();
     clipper.reset();
     det.reset();
@@ -52,6 +60,8 @@ void BandProcessor::reset()
     for (auto& v : detKey) v = -1.0;
     autoKey[0] = autoKey[1] = -1.0e9;
     autoKey[2] = -1.0;
+    levelEnv = 0.0;
+    detLevelDb = -100.0;
 }
 
 BandProcessor::Key BandProcessor::makeKey (const BandParams& p) noexcept
@@ -62,10 +72,12 @@ BandProcessor::Key BandProcessor::makeKey (const BandParams& p) noexcept
     k.slope = p.slope;
     k.type = (int) p.type;
     k.ftype = (int) p.filterType;
-    k.fpost = p.filterPost ? 1 : 0;
+    k.fslope = p.filterSlope;
     k.ntype = (int) p.noiseType;
     k.comp = p.compOn ? 1 : 0;
     k.clip = (int) p.clipMode;
+    k.fx = (int) p.fxType;
+    k.order = p.chainCode;
     return k;
 }
 
@@ -73,12 +85,14 @@ void BandProcessor::applyKey (const Key& k)
 {
     key = k;
     keyCompOn = k.comp != 0;
+    decodeChainOrder (k.order, order);
     // Called while the band is faded out: restart every stateful module.
     region.clear();
     noiseRegion.clear();
     filt.clear();
     dc.reset();
     phat.reset();
+    fx.reset();
     comp.reset();
     clipper.reset();
     noiseEnv = 0.0;
@@ -92,7 +106,7 @@ void BandProcessor::applyKey (const Key& k)
 
 void BandProcessor::designRegion (bool snap)
 {
-    const double k[4] { sLogF, sLogQ, (double) key.shape, (double) key.slope };
+    const double k[4] { eLogF, eLogQ, (double) key.shape, (double) key.slope };
     if (std::memcmp (k, regionKey, sizeof (k)) == 0) return;
     const bool fresh = regionKey[0] < -0.5 && regionKey[2] < -0.5;
     std::memcpy (regionKey, k, sizeof (k));
@@ -101,11 +115,11 @@ void BandProcessor::designRegion (bool snap)
     if ((Shape) key.shape != Shape::Full)
     {
         DesignParams dp;
-        dp.freq = std::exp (sLogF);
+        dp.freq = std::exp (eLogF);
         dp.slopeIdx = regionSlopeDesignIdx (key.slope);
         switch ((Shape) key.shape)
         {
-            case Shape::Bell: dp.type = FilterType::BandPass; dp.q = std::exp (sLogQ); break;
+            case Shape::Bell: dp.type = FilterType::BandPass; dp.q = std::exp (eLogQ); break;
             case Shape::Low:  dp.type = FilterType::HighCut;  dp.q = kDefaultQ; break;
             case Shape::High: dp.type = FilterType::LowCut;   dp.q = kDefaultQ; break;
             case Shape::Full:
@@ -120,31 +134,24 @@ void BandProcessor::designRegion (bool snap)
 
 void BandProcessor::designFilter (bool snap)
 {
-    if ((BandFilter) key.ftype == BandFilter::Off) return;
-    const double k[3] { sLogFF, sLogRes, (double) key.ftype };
+    const auto ft = (BandFilter) key.ftype;
+    if (ft == BandFilter::Off) return;
+    const double k[5] { eLogFF, eLogRes, eFGain, (double) key.ftype, (double) key.fslope };
     if (std::memcmp (k, filterKey, sizeof (k)) == 0) return;
-    const bool fresh = filterKey[2] < -0.5;
+    const bool fresh = filterKey[3] < -0.5;
     std::memcpy (filterKey, k, sizeof (k));
 
     DesignParams dp;
-    dp.freq = std::exp (sLogFF);
-    dp.q = std::exp (sLogRes);
-    dp.slopeIdx = 1;   // 12 dB/oct
-    switch ((BandFilter) key.ftype)
-    {
-        case BandFilter::LowPass:  dp.type = FilterType::HighCut;  break;
-        case BandFilter::HighPass: dp.type = FilterType::LowCut;   break;
-        case BandFilter::BandPass: dp.type = FilterType::BandPass; break;
-        case BandFilter::Off:
-        case BandFilter::Count:
-        default: return;
-    }
+    dp.freq = std::exp (eLogFF);
+    dp.q = std::exp (eLogRes);
+    dp.gainDb = eFGain;
+    dp.slopeIdx = regionSlopeDesignIdx (key.fslope);
+    dp.type = bandFilterDesignType (ft);
     filt.setTarget (designDigital (designAnalog (dp, osRate)), snap || fresh);
 }
 
-void BandProcessor::update (const BandParams& p, int hostCount, const float* detL, const float* detR)
+void BandProcessor::update (const BandParams& p, const BandMod& mod, int hostCount, const float* detL, const float* detR)
 {
-    cur = p;
     const Key want = makeKey (p);
     const double alpha = 1.0 - std::exp (-(hostCount / hostRate) / 0.02);
 
@@ -158,8 +165,11 @@ void BandProcessor::update (const BandParams& p, int hostCount, const float* det
     {
         sLogF = std::log (p.freq); sLogQ = std::log (p.q);
         sDrive = p.driveDb; sBias = p.bias; sWet = p.wet; sGain = p.gainDb;
-        sLogFF = std::log (p.filterFreq); sLogRes = std::log (p.filterRes);
+        sLogFF = std::log (p.filterFreq); sLogRes = std::log (p.filterRes); sFGain = p.filterGainDb;
         sPhat = p.phat; sNoiseDb = p.noiseDb; sFollow = p.noiseFollow; sCeil = p.clipCeiling;
+        sPan = p.pan; sMute = p.mute ? 0.0 : 1.0;
+        sLogFxRate = std::log (p.fxRate); sFxDepth = p.fxDepth; sFxFb = p.fxFeedback; sFxMix = p.fxMix;
+        eLogF = sLogF; eLogQ = sLogQ; eLogFF = sLogFF; eLogRes = sLogRes; eFGain = sFGain;
         applyKey (want);
         fade = fadeTarget = want.active ? 1.0 : 0.0;
         initialised = true;
@@ -174,10 +184,17 @@ void BandProcessor::update (const BandParams& p, int hostCount, const float* det
         smooth (sGain, p.gainDb, 1.0e-4);
         smooth (sLogFF, std::log (p.filterFreq), 1.0e-5);
         smooth (sLogRes, std::log (p.filterRes), 1.0e-5);
+        smooth (sFGain, p.filterGainDb, 1.0e-4);
         smooth (sPhat, p.phat, 1.0e-5);
         smooth (sNoiseDb, p.noiseDb, 1.0e-3);
         smooth (sFollow, p.noiseFollow, 1.0e-5);
         smooth (sCeil, p.clipCeiling, 1.0e-4);
+        smooth (sPan, p.pan, 1.0e-5);
+        smooth (sMute, p.mute ? 0.0 : 1.0, 1.0e-5);
+        smooth (sLogFxRate, std::log (p.fxRate), 1.0e-5);
+        smooth (sFxDepth, p.fxDepth, 1.0e-5);
+        smooth (sFxFb, p.fxFeedback, 1.0e-5);
+        smooth (sFxMix, p.fxMix, 1.0e-5);
 
         if (! (want == key))
         {
@@ -197,41 +214,62 @@ void BandProcessor::update (const BandParams& p, int hostCount, const float* det
         }
     }
 
-    // --- Dynamics -------------------------------------------------------------
+    // --- Dynamics: own detector bell or the band's region -----------------------
     if (key.active && p.dynOn && detL != nullptr)
     {
-        const double dk[3] { (double) key.shape, p.freq, p.q };
+        const bool ownBell = p.detMode == DetMode::Bell;
+        const double dk[4] { ownBell ? -2.0 : (double) key.shape, ownBell ? p.detFreq : p.freq, ownBell ? p.detQ : p.q, hostRate };
         if (std::memcmp (dk, detKey, sizeof (dk)) != 0)
         {
             std::memcpy (detKey, dk, sizeof (dk));
             DesignParams dp;
-            dp.freq = p.freq;
-            dp.q = p.q;
-            switch ((Shape) key.shape)
-            {
-                case Shape::Bell: dp.type = FilterType::Bell;      break;   // band-pass detector
-                case Shape::Low:  dp.type = FilterType::LowShelf;  break;   // low-pass detector
-                case Shape::High: dp.type = FilterType::HighShelf; break;   // high-pass detector
-                case Shape::Full:
-                case Shape::Count:
-                default:          dp.type = FilterType::FlatTilt;  break;   // broadband
-            }
+            dp.freq = dk[1];
+            dp.q = dk[2];
+            if (ownBell)
+                dp.type = FilterType::Bell;              // band-pass detector at the bell
+            else
+                switch ((Shape) key.shape)
+                {
+                    case Shape::Bell: dp.type = FilterType::Bell;      break;   // band-pass detector
+                    case Shape::Low:  dp.type = FilterType::LowShelf;  break;   // low-pass detector
+                    case Shape::High: dp.type = FilterType::HighShelf; break;   // high-pass detector
+                    case Shape::Full:
+                    case Shape::Count:
+                    default:          dp.type = FilterType::FlatTilt;  break;   // broadband
+                }
             det.setFilter (designDigital (designDetectorFilter (dp, hostRate)));
         }
         det.setTimes (p.dynAttack, p.dynRelease);
         det.process (detL, detR, hostCount);
-        amount = dynamicAmount (det.levelDb(), p.dynThresh);
+        detLevelDb = det.levelDb();
+        amount = dynamicAmount (detLevelDb, p.dynThresh);
     }
     else
     {
         amount *= (1.0 - alpha);
         if (amount < 1.0e-4) amount = 0.0;
+        detLevelDb = -100.0;
     }
 
-    // --- Effective values (static + dynamic) -----------------------------------
-    const double driveDb = juce::jlimit (0.0, 60.0, sDrive + p.dynDrive * amount);
-    const double wet     = juce::jlimit (0.0, 1.0, sWet + p.dynWet * amount);
-    const double gainDb  = juce::jlimit (-48.0, 48.0, sGain + p.dynGain * amount);
+    // --- Effective values (static + dynamic + modulation) ------------------------
+    const double driveDb = juce::jlimit (0.0, 60.0, sDrive + p.dynDrive * amount + mod.driveDb);
+    const double wet     = juce::jlimit (0.0, 1.0, sWet + p.dynWet * amount + mod.wet);
+    const double gainDb  = juce::jlimit (-48.0, 48.0, sGain + p.dynGain * amount + mod.gainDb);
+    const double bias    = juce::jlimit (-1.0, 1.0, sBias + mod.bias);
+    const double pan     = juce::jlimit (-1.0, 1.0, sPan + mod.pan);
+    const double phatAmt = juce::jlimit (0.0, 1.0, sPhat + mod.phat);
+    const double noiseDb = juce::jlimit ((double) kNoiseOffDb, 0.0, sNoiseDb + mod.noiseDb);
+    effDriveDb = driveDb; effWet = wet; effGainDb = gainDb;
+
+    const double maxF = std::min (30000.0, 0.49 * osRate);
+    eLogF   = juce::jlimit (std::log (10.0), std::log (maxF), sLogF + mod.freqOct * kLn2);
+    eLogQ   = juce::jlimit (std::log (0.1), std::log (20.0), sLogQ + mod.qOct * kLn2);
+    eLogFF  = juce::jlimit (std::log (20.0), std::log (std::min (20000.0, maxF)), sLogFF + mod.filterOct * kLn2);
+    eLogRes = juce::jlimit (std::log (0.1), std::log (10.0), sLogRes + mod.resoOct * kLn2);
+    eFGain  = juce::jlimit (-24.0, 24.0, sFGain + mod.filterGainDb);
+    eFxRate  = juce::jlimit (0.005, 40.0, std::exp (sLogFxRate + mod.fxRateOct * kLn2));
+    eFxDepth = juce::jlimit (0.0, 1.0, sFxDepth + mod.fxDepth);
+    eFxMix   = juce::jlimit (0.0, 1.0, sFxMix + mod.fxMix);
 
     designRegion (false);
     designFilter (false);
@@ -239,10 +277,10 @@ void BandProcessor::update (const BandParams& p, int hostCount, const float* det
     const auto type = (DistType) key.type;
     if (p.autoGain && type != DistType::Bitcrush)
     {
-        if (std::abs (driveDb - autoKey[0]) > 0.01 || std::abs (sBias - autoKey[1]) > 1.0e-4 || autoKey[2] != (double) key.type)
+        if (std::abs (driveDb - autoKey[0]) > 0.01 || std::abs (bias - autoKey[1]) > 1.0e-4 || autoKey[2] != (double) key.type)
         {
-            autoFactor = autoGainFactor (type, driveDb, sBias);
-            autoKey[0] = driveDb; autoKey[1] = sBias; autoKey[2] = (double) key.type;
+            autoFactor = autoGainFactor (type, driveDb, bias);
+            autoKey[0] = driveDb; autoKey[1] = bias; autoKey[2] = (double) key.type;
         }
     }
     else
@@ -252,17 +290,34 @@ void BandProcessor::update (const BandParams& p, int hostCount, const float* det
     }
 
     tDrive = dbToLin (driveDb);
-    tBias  = sBias;
+    tBias  = bias;
     tAuto  = autoFactor;
     tWet   = wet;
-    tGain  = dbToLin (gainDb);
-    tPhat  = sPhat;
-    tNoise = sNoiseDb > kNoiseOffDb + 0.05 ? dbToLin (sNoiseDb) : 0.0;
+    tGain  = dbToLin (gainDb) * juce::jlimit (0.0, 1.0, sMute);
+    tPhat  = phatAmt;
+    tNoise = noiseDb > kNoiseOffDb + 0.05 ? dbToLin (noiseDb) : 0.0;
+    tPanL  = pan > 0.0 ? 1.0 - pan : 1.0;
+    tPanR  = pan < 0.0 ? 1.0 + pan : 1.0;
     crushBitsNow = crushBits (driveDb);
-    crushHoldNow = crushHold (sBias) * osFactor;
+    crushHoldNow = crushHold (bias) * osFactor;
 
     if (keyCompOn)
         comp.set (p.compThresh, p.compRatio, p.compAttack, p.compRelease, p.compMakeup);
+}
+
+BandTelemetry BandProcessor::telemetry() const noexcept
+{
+    BandTelemetry t;
+    t.dyn = (float) amount;
+    t.compGr = compGainReduction();
+    t.driveDb = (float) effDriveDb;
+    t.wet = (float) effWet;
+    t.gainDb = (float) effGainDb;
+    t.freq = (float) std::exp (eLogF);
+    t.q = (float) std::exp (eLogQ);
+    t.levelDb = (float) linToDb (levelEnv);
+    t.detDb = (float) detLevelDb;
+    return t;
 }
 
 void BandProcessor::process (double* L, double* R, int n, bool stereo, BandScratch& s, double* soloL, double* soloR) noexcept
@@ -270,10 +325,12 @@ void BandProcessor::process (double* L, double* R, int n, bool stereo, BandScrat
     auto finish = [this]
     {
         rDrive = tDrive; rBias = tBias; rAuto = tAuto; rWet = tWet; rGain = tGain; rPhat = tPhat; rNoise = tNoise;
+        rPanL = tPanL; rPanR = tPanR;
     };
 
     if (! audible() || n <= 0)
     {
+        levelEnv *= std::pow (levelDecay, (double) std::max (1, n));
         finish();
         return;
     }
@@ -285,7 +342,7 @@ void BandProcessor::process (double* L, double* R, int n, bool stereo, BandScrat
     double* x[2] { s.sL, s.sR };
     double* io[2] { L, R };
 
-    // 1. Region
+    // Region
     for (int c = 0; c < nch; ++c)
     {
         std::memcpy (b[c], io[c], sizeof (double) * (size_t) n);
@@ -295,86 +352,112 @@ void BandProcessor::process (double* L, double* R, int n, bool stereo, BandScrat
     region.commit();
 
     const bool hasFilter = (BandFilter) key.ftype != BandFilter::Off;
+    bool noiseDone = false;
 
-    // 2. Pre filter
-    if (hasFilter && key.fpost == 0)
-        for (int c = 0; c < nch; ++c) filt.process (c, x[c], n);
+    // Effect chain, in the band's order
+    for (int slot = 0; slot < kNumModules; ++slot)
+    {
+        switch ((Module) order[slot])
+        {
+            case Module::Filter:
+                if (hasFilter)
+                {
+                    for (int c = 0; c < nch; ++c) filt.process (c, x[c], n);
+                    filt.commit();
+                }
+                break;
 
-    // 3. Distortion
-    const auto type = (DistType) key.type;
-    if (type == DistType::Bitcrush)
-    {
-        const int hold = std::max (1, crushHoldNow);
-        for (int i = 0; i < n; ++i)
-        {
-            if (crushCount == 0)
-                for (int c = 0; c < nch; ++c) crushHeld[c] = crushQuantise (x[c][i], crushBitsNow);
-            for (int c = 0; c < nch; ++c) x[c][i] = crushHeld[c];
-            if (++crushCount >= hold) crushCount = 0;
-        }
-    }
-    else
-    {
-        const double dd = (tDrive - rDrive) * inv, db = (tBias - rBias) * inv, da = (tAuto - rAuto) * inv;
-        for (int c = 0; c < nch; ++c)
-        {
-            double* v = x[c];
-            for (int i = 0; i < n; ++i)
+            case Module::Distortion:
             {
-                const double k = (double) (i + 1);
-                v[i] = shapeBiased (type, v[i] * (rDrive + dd * k), rBias + db * k) * (rAuto + da * k);
+                const auto type = (DistType) key.type;
+                if (type == DistType::Bitcrush)
+                {
+                    const int hold = std::max (1, crushHoldNow);
+                    for (int i = 0; i < n; ++i)
+                    {
+                        if (crushCount == 0)
+                            for (int c = 0; c < nch; ++c) crushHeld[c] = crushQuantise (x[c][i], crushBitsNow);
+                        for (int c = 0; c < nch; ++c) x[c][i] = crushHeld[c];
+                        if (++crushCount >= hold) crushCount = 0;
+                    }
+                }
+                else
+                {
+                    const double dd = (tDrive - rDrive) * inv, db = (tBias - rBias) * inv, da = (tAuto - rAuto) * inv;
+                    for (int c = 0; c < nch; ++c)
+                    {
+                        double* v = x[c];
+                        for (int i = 0; i < n; ++i)
+                        {
+                            const double k = (double) (i + 1);
+                            v[i] = shapeBiased (type, v[i] * (rDrive + dd * k), rBias + db * k) * (rAuto + da * k);
+                        }
+                    }
+                }
+                for (int c = 0; c < nch; ++c) dc.process (c, x[c], n);
+                break;
             }
+
+            case Module::Phat:
+                if (rPhat > 0.0 || tPhat > 0.0)
+                {
+                    const double dp = (tPhat - rPhat) * inv;
+                    for (int c = 0; c < nch; ++c)
+                        for (int i = 0; i < n; ++i)
+                            x[c][i] += (rPhat + dp * (double) (i + 1)) * phat.process (c, x[c][i]);
+                }
+                break;
+
+            case Module::Noise:
+                // Shaped by the band region, optionally following the band level.
+                if (rNoise > 0.0 || tNoise > 0.0)
+                {
+                    const double dn = (tNoise - rNoise) * inv;
+                    const double follow = sFollow;
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const double pk = std::max (std::abs (b[0][i]), stereo ? std::abs (b[1][i]) : 0.0);
+                        noiseEnv = pk > noiseEnv ? pk : pk + noiseEnvRel * (noiseEnv - pk);
+                        s.n1[i] = (rNoise + dn * (double) (i + 1)) * ((1.0 - follow) + follow * std::min (1.0, 2.0 * noiseEnv));
+                    }
+                    const auto nt = (NoiseType) key.ntype;
+                    for (int c = 0; c < nch; ++c)
+                    {
+                        for (int i = 0; i < n; ++i) s.n2[i] = noise[c].next (nt) * s.n1[i];
+                        noiseRegion.process (c, s.n2, n);
+                        for (int i = 0; i < n; ++i) x[c][i] += s.n2[i];
+                    }
+                    if (! std::isfinite (noiseEnv)) noiseEnv = 0.0;
+                }
+                noiseRegion.commit();
+                noiseDone = true;
+                break;
+
+            case Module::Fx:
+                fx.process ((FxType) key.fx, eFxRate, eFxDepth, sFxFb, eFxMix, x, nch, n);
+                break;
+
+            case Module::Compressor:
+                if (keyCompOn)
+                    comp.process (x[0], x[1], n, stereo);
+                break;
+
+            case Module::Clipper:
+                if ((ClipMode) key.clip != ClipMode::Off)
+                    clipper.process ((ClipMode) key.clip, sCeil, x[0], x[1], n, stereo);
+                break;
+
+            case Module::Count:
+            default:
+                break;
         }
     }
-    for (int c = 0; c < nch; ++c) dc.process (c, x[c], n);
+    if (! noiseDone) noiseRegion.commit();
 
-    // 4. Post filter
-    if (hasFilter && key.fpost == 1)
-        for (int c = 0; c < nch; ++c) filt.process (c, x[c], n);
-    if (hasFilter) filt.commit();
-
-    // 5. Phat
-    if (rPhat > 0.0 || tPhat > 0.0)
-    {
-        const double dp = (tPhat - rPhat) * inv;
-        for (int c = 0; c < nch; ++c)
-            for (int i = 0; i < n; ++i)
-                x[c][i] += (rPhat + dp * (double) (i + 1)) * phat.process (c, x[c][i]);
-    }
-
-    // 6. Noise (shaped by the band region, optionally following the band level)
-    if (rNoise > 0.0 || tNoise > 0.0)
-    {
-        const double dn = (tNoise - rNoise) * inv;
-        const double follow = sFollow;
-        for (int i = 0; i < n; ++i)
-        {
-            const double pk = std::max (std::abs (b[0][i]), stereo ? std::abs (b[1][i]) : 0.0);
-            noiseEnv = pk > noiseEnv ? pk : pk + noiseEnvRel * (noiseEnv - pk);
-            s.n1[i] = (rNoise + dn * (double) (i + 1)) * ((1.0 - follow) + follow * std::min (1.0, 2.0 * noiseEnv));
-        }
-        const auto nt = (NoiseType) key.ntype;
-        for (int c = 0; c < nch; ++c)
-        {
-            for (int i = 0; i < n; ++i) s.n2[i] = noise[c].next (nt) * s.n1[i];
-            noiseRegion.process (c, s.n2, n);
-            for (int i = 0; i < n; ++i) x[c][i] += s.n2[i];
-        }
-        if (! std::isfinite (noiseEnv)) noiseEnv = 0.0;
-    }
-    noiseRegion.commit();
-
-    // 7. Compressor
-    if (keyCompOn)
-        comp.process (x[0], x[1], n, stereo);
-
-    // 8. Clipper / limiter
-    if ((ClipMode) key.clip != ClipMode::Off)
-        clipper.process ((ClipMode) key.clip, sCeil, x[0], x[1], n, stereo);
-
-    // 9. Wet / gain and put the band back into the signal
+    // Wet / gain / pan and put the band back into the signal
     const double dw = (tWet - rWet) * inv, dg = (tGain - rGain) * inv;
-    double f = fade;
+    const double dpl = (tPanL - rPanL) * inv, dpr = (tPanR - rPanR) * inv;
+    double f = fade, pk = 0.0;
     for (int i = 0; i < n; ++i)
     {
         if (f < fadeTarget)      f = std::min (fadeTarget, f + fadeStep);
@@ -383,13 +466,17 @@ void BandProcessor::process (double* L, double* R, int n, bool stereo, BandScrat
         const double w = rWet + dw * k, g = rGain + dg * k;
         for (int c = 0; c < nch; ++c)
         {
-            const double out = g * (b[c][i] + w * (x[c][i] - b[c][i]));
+            const double pg = ! stereo ? 1.0 : (c == 0 ? rPanL + dpl * k : rPanR + dpr * k);
+            const double out = pg * g * (b[c][i] + w * (x[c][i] - b[c][i]));
             io[c][i] += f * (out - b[c][i]);
+            pk = std::max (pk, std::abs (out) * f);
             if (c == 0 && soloL != nullptr) soloL[i] = out;
             if (c == 1 && soloR != nullptr) soloR[i] = out;
         }
     }
     fade = f;
+    const double decayed = levelEnv * std::pow (levelDecay, (double) n);
+    levelEnv = std::isfinite (pk) ? std::max (pk, decayed) : 0.0;
     finish();
 }
 

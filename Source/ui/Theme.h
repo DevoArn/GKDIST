@@ -34,6 +34,8 @@ namespace Colours
 
 /** Distinct, evenly spread hue per band. */
 juce::Colour bandColour (int band);
+/** Band colour whose saturation and brightness rise with intensity (0..1). */
+juce::Colour intensityColour (int band, float intensity);
 
 /** Small vector icon for a band region shape. */
 juce::Path shapeIcon (Shape s, juce::Rectangle<float> r);

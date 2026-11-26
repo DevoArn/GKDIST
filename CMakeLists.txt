@@ -34,6 +34,9 @@ set(GKD_UI_SOURCES
     Source/ui/DistDisplay.cpp
     Source/ui/Controls.cpp
     Source/ui/BandPanel.cpp
+    Source/ui/ChainStrip.cpp
+    Source/ui/MixerPanel.cpp
+    Source/ui/ModPanel.cpp
     Source/ui/GlobalPanel.cpp
     Source/ui/TopBar.cpp)
 

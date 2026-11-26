@@ -6,6 +6,7 @@
 
 #include "BandProcessor.h"
 #include "Oversampler.h"
+#include "Modulation.h"
 #include <memory>
 
 namespace gkd::dsp
@@ -19,11 +20,14 @@ struct EngineInput
     int                 scChannels = 0;
     float*              dynAmountOut = nullptr; // kNumBands
     float*              compGrOut = nullptr;    // kNumBands
+    BandTelemetry*      telemetryOut = nullptr; // kNumBands
+    ModMatrix*          mod = nullptr;          // modulation sources (shared by all engines)
+    const ModSlot*      modSlots = nullptr;     // kNumModSlots
 };
 
 /** The complete GKDIST signal path for one oversampling factor:
 
-    input -> [oversample] -> band 1 ... band 24 (in series) -> solo
+    input -> [oversample] -> band 1 ... band 24 (in series, each with its own effect chain) -> solo
           -> global HP/LP -> global compressor -> global noise -> global clipper
           -> [downsample] -> dry/wet mix -> output gain -> look-ahead limiter
 
@@ -53,6 +57,7 @@ private:
     int osLog2 = 0, osFactor = 1, channels = 2, maxBlock = 512;
     LinearPhaseOversampler os;
     BandProcessor bands[kNumBands];
+    BandMod bandMods[kNumBands];
     BandScratch scratch;
 
     // processing-rate work buffers (one control block)

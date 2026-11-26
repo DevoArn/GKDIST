@@ -10,3 +10,6 @@
 *.user
 Thumbs.db
 desktop.ini
+
+# Windows shortcuts
+*.lnk

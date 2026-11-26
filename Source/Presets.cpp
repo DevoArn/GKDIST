@@ -32,6 +32,9 @@ StateBuilder& StateBuilder::add (int b, Shape shape, double freq, double q, Dist
     band (b, bpType, (float) (int) type);
     band (b, bpDrive, (float) driveDb);
     band (b, bpWet, (float) wetPercent);
+    // The dynamics detector bell starts on the band (as when a band is created in the editor).
+    band (b, bpDetFreq, (float) juce::jlimit (20.0, 20000.0, freq));
+    band (b, bpDetQ, (float) q);
     return *this;
 }
 
@@ -46,7 +49,9 @@ juce::StringArray factoryNames()
              "Dynamic Saturation (only when loud)",
              "Sizzle Highs",
              "Fuzz Lead",
-             "Master Loudness (clip + limit)" };
+             "Master Loudness (clip + limit)",
+             "Phaser Grit (wet follows a bell)",
+             "Wobble Drive (LFO modulation)" };
 }
 
 juce::ValueTree makeFactory (int index, const juce::ValueTree& defaults)
@@ -88,13 +93,39 @@ juce::ValueTree makeFactory (int index, const juce::ValueTree& defaults)
             break;
         case 8:
             s.add (0, Shape::Bell, 1500, 0.7, DistType::Fuzz, 22, 85);
-            s.band (0, bpFilterType, (float) (int) BandFilter::LowPass).band (0, bpFilterPos, 1.0f).band (0, bpFilterFreq, 6000.0f);
+            s.band (0, bpFilterType, (float) (int) BandFilter::LowPass).band (0, bpFilterFreq, 6000.0f);
+            {
+                const int postFilter[kNumModules] { (int) Module::Distortion, (int) Module::Filter, (int) Module::Phat, (int) Module::Noise,
+                                                    (int) Module::Fx, (int) Module::Compressor, (int) Module::Clipper };
+                s.band (0, bpChainOrder, (float) encodeChainOrder (postFilter));
+            }
             s.band (0, bpClipMode, (float) (int) ClipMode::Soft).band (0, bpClipCeiling, -3.0f);
             break;
         case 9:
             s.add (0, Shape::Full, 1000, 1, DistType::SoftClip, 4, 100);
             s.global (gpClipOn, 1.0f).global (gpClipCeiling, -1.0f).global (gpClipSoft, 1.0f);
             s.global (gpLimitOn, 1.0f).global (gpLimitCeiling, -0.3f);
+            break;
+        case 10:
+            // Distortion + phaser that only comes in when the 3 kHz region gets loud.
+            s.add (0, Shape::Bell, 1800, 0.9, DistType::Transistor, 18, 0);
+            s.band (0, bpFxType, (float) (int) FxType::Phaser).band (0, bpFxRate, 0.4f).band (0, bpFxDepth, 70.0f)
+             .band (0, bpFxFeedback, 40.0f).band (0, bpFxMix, 60.0f);
+            s.band (0, bpDynOn, 1.0f).band (0, bpDetMode, (float) (int) DetMode::Bell).band (0, bpDetFreq, 3000.0f)
+             .band (0, bpDetQ, 2.0f).band (0, bpDynThresh, -30.0f).band (0, bpDynWet, 100.0f);
+            break;
+        case 11:
+            // Tempo-synced drive wobble on the mids, slow filter sweep.
+            s.add (0, Shape::Low, 200, 1, DistType::Tube, 12, 100);
+            s.add (1, Shape::Bell, 2000, 0.8, DistType::Fuzz, 14, 70);
+            s.band (1, bpFxType, (float) (int) FxType::Chorus).band (1, bpFxMix, 35.0f);
+            s.band (1, bpFilterType, (float) (int) BandFilter::LowPass).band (1, bpFilterFreq, 4000.0f).band (1, bpFilterRes, 1.4f);
+            s.global (gpLfo1Sync, 1.0f).global (gpLfo1Div, 4.0f).global (gpLfo1Shape, (float) (int) LfoShape::Triangle);
+            s.global (gpLfo2Rate, 0.2f).global (gpLfo2Shape, (float) (int) LfoShape::Sine);
+            s.mod (0, mpSource, (float) (int) ModSource::Lfo1).mod (0, mpBand, 2.0f)
+             .mod (0, mpTarget, (float) (int) ModTarget::Drive).mod (0, mpAmount, 30.0f);
+            s.mod (1, mpSource, (float) (int) ModSource::Lfo2).mod (1, mpBand, 2.0f)
+             .mod (1, mpTarget, (float) (int) ModTarget::FilterFreq).mod (1, mpAmount, 35.0f);
             break;
         default:
             break;

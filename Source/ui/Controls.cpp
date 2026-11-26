@@ -32,18 +32,26 @@ void Knob::setAccent (juce::Colour c)
     slider.setColour (juce::Slider::rotarySliderFillColourId, c);
 }
 
+void Knob::setCompact()
+{
+    compact = true;
+    slider.getProperties().set ("compact", true);
+    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 13);
+    resized();
+}
+
 void Knob::resized()
 {
     auto r = getLocalBounds();
-    r.removeFromTop (13);
+    r.removeFromTop (compact ? 11 : 13);
     slider.setBounds (r);
 }
 
 void Knob::paint (juce::Graphics& g)
 {
     g.setColour (isEnabled() ? Colours::textDim : Colours::textDim.withAlpha (0.4f));
-    g.setFont (LookAndFeel::font (10.5f, true));
-    g.drawText (caption, getLocalBounds().removeFromTop (13), juce::Justification::centred);
+    g.setFont (LookAndFeel::font (compact ? 9.5f : 10.5f, true));
+    g.drawText (caption, getLocalBounds().removeFromTop (compact ? 11 : 13), juce::Justification::centred);
 }
 
 // ---------------------------------------------------------------------------

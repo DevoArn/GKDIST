@@ -6,6 +6,7 @@
 // checks hostile / corrupt state handling, and renders the application icon.
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "Presets.h"
 #include <cstdio>
 
 using namespace gkd;
@@ -47,6 +48,25 @@ static void save (juce::Component& c, const juce::String& name)
     juce::FileOutputStream os (f);
     juce::PNGImageFormat().writeImageToStream (img, os);
     std::printf ("  wrote %s\n", f.getFullPathName().toRawUTF8());
+}
+
+static juce::MouseEvent mouseEvent (juce::Component& c, juce::Point<float> pos, juce::Point<float> down, bool dragged, int clicks = 1,
+                                    juce::ModifierKeys mods = juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier))
+{
+    return juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), pos, mods,
+                             juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation,
+                             juce::MouseInputSource::defaultRotation, juce::MouseInputSource::defaultTiltX,
+                             juce::MouseInputSource::defaultTiltY, &c, &c, juce::Time::getCurrentTime(), down,
+                             juce::Time::getCurrentTime(), clicks, dragged);
+}
+
+/** Press at a, drag to b in steps, release. */
+static void dragOn (juce::Component& c, juce::Point<float> a, juce::Point<float> b)
+{
+    c.mouseDown (mouseEvent (c, a, a, false));
+    for (int i = 1; i <= 8; ++i)
+        c.mouseDrag (mouseEvent (c, a + (b - a) * ((float) i / 8.0f), a, true));
+    c.mouseUp (mouseEvent (c, b, a, true));
 }
 
 /** Application icon: a sine wave driven into clipping. */
@@ -168,6 +188,53 @@ int main (int argc, char** argv)
         expect (true, "survived 400 random / corrupt state blobs while processing");
     }
 
+    std::printf ("[factory presets]\n");
+    {
+        auto pp = std::make_unique<GKDistProcessor>();
+        auto& p = *pp;
+        p.setPlayConfigDetails (4, 2, 48000.0, 512);
+        p.prepareToPlay (48000.0, 512);
+        juce::Random rng (21);
+        const auto names = presets::factoryNames();
+        bool allOk = true;
+        for (int i = 0; i < names.size(); ++i)
+        {
+            p.loadParameterState (presets::makeFactory (i, p.getDefaultParameterState()), false);
+            juce::AudioBuffer<float> buf (4, 512);
+            juce::MidiBuffer midi;
+            float peak = 0.0f;
+            bool finite = true;
+            for (int blk = 0; blk < 120; ++blk)
+            {
+                buf.clear();
+                for (int k = 0; k < 512; ++k)
+                {
+                    const float v = 0.3f * std::sin (0.07f * (float) (blk * 512 + k)) + 0.05f * (rng.nextFloat() - 0.5f);
+                    buf.setSample (0, k, v);
+                    buf.setSample (1, k, v);
+                }
+                p.processBlock (buf, midi);
+                for (int c = 0; c < 2; ++c)
+                    for (int k = 0; k < 512; ++k)
+                    {
+                        const float v = buf.getSample (c, k);
+                        finite = finite && std::isfinite (v);
+                        peak = std::max (peak, std::abs (v));
+                    }
+            }
+            bool detOk = true;
+            for (int b = 0; b < kNumBands; ++b)
+            {
+                const auto bp = p.refs.readBand (b);
+                if (bp.used && bp.dynOn && bp.detMode == DetMode::Bell && i != 10)   // preset 10 moves its bell on purpose
+                    detOk = detOk && std::abs (bp.detFreq / juce::jlimit (20.0, 20000.0, bp.freq) - 1.0) < 0.01;
+            }
+            std::printf ("  %-38s peak %.2f%s%s\n", names[i].toRawUTF8(), peak, finite ? "" : "  NON-FINITE", detOk ? "" : "  DETECTOR OFF-BAND");
+            allOk = allOk && finite && peak < 8.0f && detOk;
+        }
+        expect (allOk, "every factory preset loads, processes finite audio and has its detector on the band");
+    }
+
     std::printf ("[editor]\n");
     auto procPtr = std::make_unique<GKDistProcessor>();
     auto& proc = *procPtr;
@@ -186,7 +253,7 @@ int main (int argc, char** argv)
 
     juce::Random rng (5);
     std::unique_ptr<GKDistEditor> ed (dynamic_cast<GKDistEditor*> (proc.createEditor()));
-    ed->setSize (1280, 860);
+    ed->setSize (1280, 900);
     feed (proc, 200, rng);
     save (*ed, "build/ui_main.png");
 
@@ -232,8 +299,94 @@ int main (int argc, char** argv)
         expect (! proc.refs.readBand (before).used, "undo removes the created band");
     }
 
+    std::printf ("[filter, detector and chain]\n");
+    {
+        auto& d = ed->getDisplay();
+        d.selectBand (b2);
+        proc.setParam (bandParamId (b2, bpFilterType), (float) (int) BandFilter::Peak);
+        proc.setParam (bandParamId (b2, bpFilterFreq), 2000.0f);
+        proc.setParam (bandParamId (b2, bpFilterGain), 0.0f);
+        feed (proc, 16, rng);
+        dragOn (d, d.filterHandlePosition (b2), { d.freqToX (4000.0), d.filterDbToY (9.0) });
+        auto p = proc.refs.readBand (b2);
+        std::printf ("  dragged filter handle: %.0f Hz, gain %+.2f dB (expected 4000 Hz, +9 dB)\n", p.filterFreq, p.filterGainDb);
+        expect (std::abs (p.filterFreq / 4000.0 - 1.0) < 0.01 && std::abs (p.filterGainDb - 9.0) < 0.15, "filter handle sets filter frequency and gain");
+
+        proc.setParam (bandParamId (b2, bpDetMode), (float) (int) DetMode::Bell);
+        feed (proc, 16, rng);
+        dragOn (d, d.detectorHandlePosition (b2), { d.freqToX (3000.0), d.specToY (-24.0f) });
+        p = proc.refs.readBand (b2);
+        std::printf ("  dragged detector handle: %.0f Hz, threshold %.2f dB (expected 3000 Hz, -24 dB)\n", p.detFreq, p.dynThresh);
+        expect (std::abs (p.detFreq / 3000.0 - 1.0) < 0.01 && std::abs (p.dynThresh + 24.0) < 0.2, "detector handle sets bell frequency and threshold");
+        expect (std::abs (p.freq / 2400.0 - 1.0) < 0.01, "detector bell moves independently of the band");
+
+        // Drag FILTER (slot 0) onto slot 3 in the effect chain.
+        auto& chain = ed->getBandPanel().getChainStrip();
+        dragOn (chain, chain.slotCentre (0), chain.slotCentre (3));
+        p = proc.refs.readBand (b2);
+        juce::String order;
+        for (int i = 0; i < kNumModules; ++i) order << moduleNames()[p.order[i]] << (i < kNumModules - 1 ? " > " : "");
+        std::printf ("  chain after dragging FILTER to slot 4: %s\n", order.toRawUTF8());
+        expect (p.order[0] == (int) Module::Distortion && p.order[3] == (int) Module::Filter && p.order[4] == (int) Module::Fx,
+                "dragging a module reorders the band's chain");
+        proc.setParam (bandParamId (b2, bpFxType), (float) (int) FxType::Phaser);
+        feed (proc, 40, rng);
+        save (*ed, "build/ui_band_fx.png");
+        proc.undo();
+        proc.undo();
+        expect (proc.refs.readBand (b2).chainCode == 0 && proc.refs.readBand (b2).fxType == FxType::Off, "chain and FX changes are undoable");
+        proc.setParam (bandParamId (b2, bpFxType), (float) (int) FxType::Phaser);
+    }
+
+    std::printf ("[intensity and clashes]\n");
+    {
+        auto& d = ed->getDisplay();
+        const int hot1 = proc.createBand (Shape::Bell, 450.0, 40.0, 1.0, DistType::HardClip);
+        const int hot2 = proc.createBand (Shape::Bell, 520.0, 38.0, 1.0, DistType::Fuzz);
+        feed (proc, 80, rng);
+        std::printf ("  intensity: band %d (40 dB) %.2f, band 1 (14 dB) %.2f; clash %d/%d %.2f, clash 1/%d %.2f\n",
+                     hot1 + 1, d.bandIntensity (hot1), d.bandIntensity (0), hot1 + 1, hot2 + 1, d.clashBetween (hot1, hot2),
+                     hot2 + 1, d.clashBetween (0, hot2));
+        expect (d.bandIntensity (hot1) > d.bandIntensity (0) + 0.3f, "harder driven band is more intense");
+        expect (d.clashBetween (hot1, hot2) > 0.3f, "two hot overlapping bands are reported as a clash");
+        expect (d.clashBetween (b4, hot1) < 0.05f, "bands far apart do not clash");
+        save (*ed, "build/ui_clash.png");
+    }
+
+    std::printf ("[mixer and modulation]\n");
+    {
+        int used = 0;
+        for (int b = 0; b < kNumBands; ++b) used += proc.refs.readBand (b).used ? 1 : 0;
+        ed->showPage (1);
+        feed (proc, 30, rng);
+        std::printf ("  mixer strips: %d for %d bands\n", ed->getMixerPanel().numVisibleStrips(), used);
+        expect (ed->getMixerPanel().numVisibleStrips() == used, "one mixer strip per band");
+        save (*ed, "build/ui_mixer.png");
+
+        proc.setParam (modParamId (0, mpSource), (float) (int) ModSource::Lfo1);
+        proc.setParam (modParamId (0, mpBand), (float) (b4 + 1));
+        proc.setParam (modParamId (0, mpTarget), (float) (int) ModTarget::Drive);
+        proc.setParam (modParamId (0, mpAmount), 40.0f);
+        proc.setParam (globalParamId (gpLfo1Rate), 3.0f);
+        proc.setParam (modParamId (1, mpSource), (float) (int) ModSource::InputEnv);
+        proc.setParam (modParamId (1, mpTarget), (float) (int) ModTarget::Wet);
+        proc.setParam (modParamId (1, mpAmount), -30.0f);
+        ed->showPage (2);
+        float lo = 1.0e9f, hi = -1.0e9f;
+        for (int i = 0; i < 40; ++i)
+        {
+            feed (proc, 2, rng);
+            const float v = proc.getTelemetry (b4).driveDb;
+            lo = std::min (lo, v); hi = std::max (hi, v);
+        }
+        std::printf ("  band %d drive under LFO modulation: %.1f .. %.1f dB\n", b4 + 1, lo, hi);
+        expect (hi - lo > 10.0f, "LFO modulation moves the band's drive");
+        save (*ed, "build/ui_mod.png");
+        ed->showPage (0);
+    }
+
     proc.setParam (globalParamId (gpLimitOn), 1.0f);
-    ed->setSize (1600, 1000);
+    ed->setSize (1600, 1040);
     ed->getDisplay().selectBand (b4);
     feed (proc, 60, rng);
     save (*ed, "build/ui_large.png");
@@ -242,7 +395,7 @@ int main (int argc, char** argv)
         juce::Image img (juce::Image::ARGB, ed->getWidth(), ed->getHeight(), true);
         const double t0 = juce::Time::getMillisecondCounterHiRes();
         for (int i = 0; i < 20; ++i) { juce::Graphics g (img); ed->paintEntireComponent (g, true); }
-        std::printf ("  software repaint 1600x1000: %.1f ms per frame\n", (juce::Time::getMillisecondCounterHiRes() - t0) / 20.0);
+        std::printf ("  software repaint 1600x1040: %.1f ms per frame\n", (juce::Time::getMillisecondCounterHiRes() - t0) / 20.0);
     }
 
     ed.reset();

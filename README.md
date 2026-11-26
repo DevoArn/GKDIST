@@ -1,11 +1,15 @@
 # GKDIST
 
 A free, open-source 24-band multiband distortion plug-in for Windows (VST3,
-x64), by GK. Every band has its own distortion (10 types), filter, Phat
-(sub-octave weight), noise, compressor and clipper, plus dynamics that can move
-the band's drive, wet amount and gain with the level of the input or an
-external side-chain. The global section adds high/low-pass filters, a bus
-compressor, noise, a clipper, a look-ahead brick-wall limiter and dry/wet mix.
+x64), by GK. Every band has its own effect chain - distortion (10 types),
+filter, Phat (sub-octave weight), noise, modulation FX (phaser, flanger,
+chorus, vibrato, tremolo, auto pan), compressor and clipper - in an order you
+set by dragging. Per-band dynamics move drive, wet and gain with the level in
+an independent detector bell (or an external side-chain), and a modulation
+matrix routes two LFOs and two envelope followers to any band parameter.
+A mixer page, intensity-coloured bands and clash marking show what each band
+is doing. The global section adds high/low-pass filters, a bus compressor,
+noise, a clipper, a look-ahead brick-wall limiter and dry/wet mix.
 Works in any VST3 host (DAW) on Windows; a standalone app is included.
 
 It has its own name and visual design and is not affiliated with any
@@ -78,29 +82,54 @@ fully transparent, and bands can overlap and run in series.
 - Region: *Bell* (band around the frequency, Q 0.1 – 20), *Low* (everything
   below), *High* (everything above) or *Full* (whole signal); slopes 12, 24
   or 48 dB/oct.
-- Enable, Solo (listen to the processed region only), Delete.
+- Enable, Solo (listen to the processed region only), Mute (removes the
+  region), Pan, Delete.
 
 **Distortion** (per band) – Soft Clip, Hard Clip, Tube, Tape, Transistor,
 Diode, Fuzz, Foldback, Rectify, Bitcrush. Drive 0 – 48 dB, Bias (asymmetry –
 even harmonics; sample-rate reduction for Bitcrush), Auto Gain (keeps the
 level constant when the drive changes). A live transfer curve shows the shape.
 
-**Per-band modules**
-- *Filter* – low-pass, high-pass or band-pass with resonance, before or after
-  the distortion.
+**Per-band effect chain** – seven modules; drag them in the *EFFECT CHAIN*
+strip to set their order (e.g. filter before or after the distortion,
+compressor before the phaser …). Order changes are click-free.
+- *Filter* – Low Pass, High Pass, Band Pass, Notch, Peak, Low Shelf, High
+  Shelf, Tilt; 12 / 24 / 48 dB/oct, resonance, gain. Drawn on the display
+  with its own handle.
+- *Distortion* – see above.
 - *Phat* – sub-octave generator and low-end warmth for weight and fatness.
 - *Noise* – white, pink or crackle, shaped to the band's region; *Follow*
   makes it track the signal envelope (100 % = silent when the input is).
+- *FX* – Phaser (6 stages), Flanger, Chorus, Vibrato, Tremolo, Auto Pan, with
+  rate, depth, feedback and mix; stereo LFO offset.
 - *Compressor* – threshold, ratio, attack, release, makeup, with a
   gain-reduction meter.
 - *Clip / Limit* – soft clip, hard clip or limit at an adjustable ceiling.
-- *Output* – Wet (dry/wet of the band) and Gain.
+- After the chain: *Wet* (dry/wet of the band), *Gain*, *Pan*, *Mute*.
 
 **Dynamics** (per band) – threshold, attack, release, internal or external
-side-chain detection. Above the threshold the band's **gain** (±24 dB),
-**drive** (±48 dB) and **wet** (±100 %) move by their ranges – e.g. distort
-only the loud hits, or add grit only when the signal is quiet. The live drive
-movement is shown as a ring on the node, the amount as a meter.
+side-chain detection. The detector listens either to the band's own region or
+to an **independent bell** (frequency, Q) – like a dynamic EQ: e.g. turn the
+distortion's wet up only when the 3 kHz area gets loud. Above the threshold
+the band's **gain** (±24 dB), **drive** (±48 dB) and **wet** (±100 %) move by
+their ranges. On the display the detector bell, its threshold handle **T**
+and the live detector level are drawn; the live drive is a ring on the node.
+
+**Mixer** (*MIXER* page) – a channel strip per band: drive, wet, pan, gain
+fader with output level meter and peak hold, mute, solo.
+
+**Modulation** (*MODULATION* page) – two LFOs (sine, triangle, saw up/down,
+square, sample & hold, smooth random; free rate 0.01 – 20 Hz or tempo-synced
+1/32 … 4 bars, following the host's song position), input and side-chain
+envelope followers, and 8 matrix slots: source → band (one or all) → target
+(drive, wet, gain, frequency, Q, bias, filter freq / reso / gain, phat,
+noise, FX rate / depth / mix, pan) with amount ±100 %.
+
+**Visual feedback** – a band's colour gets more saturated and brighter the
+harder it is driven (drive × wet, including dynamics and modulation), bands
+glow with their live output level, overlapping bands mix their colours, and
+**clashes** – frequencies where two active bands work hard at the same time –
+are marked red under the curves (the hover read-out names the competing band).
 
 **Global section** – oversampling (Off, 2x, 4x, 8x, linear-phase with exact
 integer latency), high-pass / low-pass (12 or 24 dB/oct), bus compressor,
@@ -108,11 +137,12 @@ noise, clipper (soft / hard), brick-wall limiter with 1 ms look-ahead (no
 sample exceeds the ceiling), dry/wet mix (latency-compensated), output gain,
 click-free latency-compensated bypass.
 
-**Workflow** – undo/redo, A/B with copy, 10 factory presets and user presets
+**Workflow** – undo/redo, A/B with copy, 12 factory presets and user presets
 (saved to `Documents\GKDIST\Presets`), pre / post spectrum analyser
 (range, resolution, speed, tilt and freeze in *Settings*), resizable window, GPU (OpenGL) drawing (toggle in *Settings*),
-context menus, all 911 parameters automatable. Type, shape and slope changes
-are click-free (the band fades out and back in over 5 ms).
+context menus, 1241 parameters (all automatable except the chain order).
+Type, shape, slope, filter, FX and order changes are click-free (the band
+fades out and back in over 5 ms).
 
 ### Mouse & keyboard
 
@@ -123,7 +153,11 @@ are click-free (the band fades out and back in over 5 ms).
 | Ctrl+drag / Shift+drag | Adjust Q / fine adjustment |
 | Wheel on node / Ctrl+wheel | Q (Shift: fine) / wet |
 | Double-click node / Alt+click node | Enable-bypass / delete |
-| Right-click node / empty area | Band menu (shape, type, solo, dynamics …) / add band, delete all |
+| Drag **F** handle (selected band) | Filter frequency + gain (resonance for LP/HP/BP/Notch; Ctrl: resonance) |
+| Drag **T** handle (dynamic band) | Detector bell frequency + threshold; wheel: bell Q |
+| Drag a module in EFFECT CHAIN | Change the band's effect order (right-click: reset) |
+| Click / double-click a mixer strip header | Select the band / open it on the BAND page |
+| Right-click node / empty area | Band menu (shape, type, filter, FX, solo, mute, dynamics, detector …) / add band, delete all |
 | Delete, Esc | Delete selected band, deselect |
 | Left/Right, Up/Down (Shift: fine) | Frequency ±1/12 octave, drive ±1 dB |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | Undo, redo |
@@ -148,13 +182,27 @@ are click-free (the band fades out and back in over 5 ms).
 - Noise levels within 0.01 dB of the setting for all three colours.
 - 20 s of random automation of all 24 bands with NaN input: output finite and
   limited.
+- Effect chain: all 5040 orders encode / decode; a low pass after a hard
+  clipper removes the 3rd harmonic 35 dB more than one before it.
+- Band filter: Peak +12 dB measures +12.00 dB, Notch below −250 dB, 24 dB/oct
+  low pass −48.2 dB two octaves up, High Shelf −9 dB measures −8.99 dB.
+- FX: all six types active and stable with 90 % feedback; tremolo swing 61 dB;
+  hard-left pan / mute remove the band exactly.
+- Detector bell at 5 kHz: a loud 1 kHz tone gives amount 0.00, a 5 kHz tone
+  1.00; in region mode it follows the band.
+- Modulation: LFO routed to one band only (+24.00 dB at the crest), tempo-synced
+  phase exact (0.2500 after a 1/16 at 120 BPM), envelope source, ±12 dB drive
+  modulation measured in the engine.
 - CPU, stereo 48 kHz: 4 bands at 4x 3 % of one core; 24 bands with every
-  module on at 4x 35 %.
-- VST3 host test: loads, side-chain bus, 911 parameters, latency switching,
+  module on (incl. phaser and dynamics) at 4x about 45 %.
+- VST3 host test: loads, side-chain bus, 1241 parameters, latency switching,
   transparent with no bands, hard clipping produces odd harmonics with auto
   gain holding the level, limiter ceiling, state round trip.
-- UI test: node drag and double-click create/edit the right parameters, undo,
-  hostile / corrupt state blobs are rejected or clamped.
+- UI test: dragging nodes, the filter handle, the detector handle and chain
+  modules sets the right parameters; undo; intensity and clash detection;
+  one mixer strip per band; LFO modulation visible in the telemetry; all
+  factory presets load and process; hostile / corrupt state blobs are
+  rejected or clamped.
 
 ## Known limitations
 
@@ -163,8 +211,10 @@ are click-free (the band fades out and back in over 5 ms).
 - Oversampling uses linear-phase filters: with 2x – 8x there are 71 – 81
   samples of extra latency at 48 kHz, and content above ~20 kHz (at 44.1 /
   48 kHz) is rolled off by the half-band filters.
-- 24 bands with every module enabled at 8x oversampling needs a large part
-  of one CPU core; use 2x or 4x for many bands.
+- 24 bands with every module enabled at 8x oversampling needs most of one CPU
+  core; use 2x or 4x for many bands.
+- The chain order is not automatable (it is saved with the project, presets,
+  undo and A/B). Modulation updates every 32 samples (0.7 ms at 48 kHz).
 - The plug-in has been verified with automated tests and a JUCE test host.
 
 ## Contributing

@@ -20,6 +20,10 @@ GKDistProcessor::GKDistProcessor()
     initUIDefaults();
     for (auto& v : dynAmount) v.store (0.0f);
     for (auto& v : compGr) v.store (0.0f);
+    for (auto& v : lfoValue) v.store (0.0f);
+    for (auto& v : lfoPhase) v.store (0.0f);
+    for (auto& v : envValue) v.store (0.0f);
+    for (auto& v : modSlotValue) v.store (0.0f);
 }
 
 GKDistProcessor::~GKDistProcessor() = default;
@@ -38,7 +42,8 @@ void GKDistProcessor::initUIDefaults()
     setDefault ("anaTilt", 4.5);
     setDefault ("anaFreeze", false);
     setDefault ("width", 1280);
-    setDefault ("height", 860);
+    setDefault ("height", 900);
+    setDefault ("lowerTab", 0);
     setDefault ("gpu", true);
 
     // Values from project files arrive as strings and may be hostile: clamp them.
@@ -61,7 +66,8 @@ void GKDistProcessor::initUIDefaults()
     clampInt ("anaSpeed", 0, 4, 2);
     uiState.setProperty ("anaTilt", juce::jlimit (0.0, 6.0, number ("anaTilt", 4.5)), nullptr);
     clampInt ("width", 1280, 2560, 1280);
-    clampInt ("height", 760, 1600, 860);
+    clampInt ("height", 800, 1600, 900);
+    clampInt ("lowerTab", 0, 2, 0);
 }
 
 juce::AudioProcessorParameter* GKDistProcessor::getBypassParameter() const
@@ -104,6 +110,7 @@ void GKDistProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
     switchStep = (float) (1.0 / (0.004 * sampleRate));
     bypassStep = (float) (1.0 / (0.010 * sampleRate));
+    modMatrix.prepare (sampleRate);
     const auto g = refs.readGlobal();
     bypassMix = g.bypass ? 1.0f : 0.0f;
     activateEngine (g.osLog2);
@@ -150,7 +157,24 @@ void GKDistProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
     for (int b = 0; b < kNumBands; ++b)
         bandsRT[b] = refs.readBand (b);
+    for (int m = 0; m < kNumModSlots; ++m)
+        modSlotsRT[m] = refs.readModSlot (m);
     const GlobalParams g = refs.readGlobal();
+
+    // Host transport for tempo-synced LFOs
+    {
+        bool playing = false;
+        double bpm = 120.0, ppq = 0.0;
+        if (auto* ph = getPlayHead())
+            if (auto pos = ph->getPosition())
+            {
+                playing = pos->getIsPlaying();
+                if (auto b = pos->getBpm()) bpm = *b;
+                if (auto q = pos->getPpqPosition()) ppq = *q;
+                else playing = false;
+            }
+        modMatrix.setTransport (playing, bpm, ppq);
+    }
 
     if (g.osLog2 != activeOs && switchState == Switch::Idle)
         switchState = Switch::FadingOut;
@@ -191,6 +215,9 @@ void GKDistProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         in.scChannels = scCh;
         in.dynAmountOut = dynRT;
         in.compGrOut = grRT;
+        in.telemetryOut = telRT;
+        in.mod = &modMatrix;
+        in.modSlots = modSlotsRT;
         engines[activeOs].process (io, nch, len, in);
 
         for (int i = 0; i < len; ++i)
@@ -223,6 +250,7 @@ void GKDistProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     postTap.writeMix (mainBus.getReadPointer (0), nch > 1 ? mainBus.getReadPointer (1) : nullptr, n);
+    lastProcessMs.store (juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
     outPeakDb.store ((float) dsp::linToDb (peak));
     globalCompGr.store ((float) engines[activeOs].globalCompGainReduction());
     limiterGr.store ((float) engines[activeOs].limiterGainReduction());
@@ -230,7 +258,40 @@ void GKDistProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     {
         dynAmount[(size_t) b].store (dynRT[b], std::memory_order_relaxed);
         compGr[(size_t) b].store (grRT[b], std::memory_order_relaxed);
+        auto& t = telemetry[(size_t) b];
+        const auto& r = telRT[b];
+        t.driveDb.store (r.driveDb, std::memory_order_relaxed);
+        t.wet.store (r.wet, std::memory_order_relaxed);
+        t.gainDb.store (r.gainDb, std::memory_order_relaxed);
+        t.freq.store (r.freq, std::memory_order_relaxed);
+        t.q.store (r.q, std::memory_order_relaxed);
+        t.levelDb.store (r.levelDb, std::memory_order_relaxed);
+        t.detDb.store (r.detDb, std::memory_order_relaxed);
     }
+    for (int l = 0; l < 2; ++l)
+    {
+        lfoValue[(size_t) l].store ((float) modMatrix.lfoValue (l), std::memory_order_relaxed);
+        lfoPhase[(size_t) l].store ((float) modMatrix.lfoPhase (l), std::memory_order_relaxed);
+    }
+    envValue[0].store ((float) modMatrix.sourceValue (ModSource::InputEnv), std::memory_order_relaxed);
+    envValue[1].store ((float) modMatrix.sourceValue (ModSource::SidechainEnv), std::memory_order_relaxed);
+    for (int m = 0; m < kNumModSlots; ++m) modSlotValue[(size_t) m].store ((float) modMatrix.slotOutput (m), std::memory_order_relaxed);
+}
+
+dsp::BandTelemetry GKDistProcessor::getTelemetry (int band) const noexcept
+{
+    const auto& t = telemetry[(size_t) juce::jlimit (0, kNumBands - 1, band)];
+    dsp::BandTelemetry r;
+    r.dyn = dynAmount[(size_t) juce::jlimit (0, kNumBands - 1, band)].load (std::memory_order_relaxed);
+    r.compGr = compGr[(size_t) juce::jlimit (0, kNumBands - 1, band)].load (std::memory_order_relaxed);
+    r.driveDb = t.driveDb.load (std::memory_order_relaxed);
+    r.wet = t.wet.load (std::memory_order_relaxed);
+    r.gainDb = t.gainDb.load (std::memory_order_relaxed);
+    r.freq = t.freq.load (std::memory_order_relaxed);
+    r.q = t.q.load (std::memory_order_relaxed);
+    r.levelDb = t.levelDb.load (std::memory_order_relaxed);
+    r.detDb = t.detDb.load (std::memory_order_relaxed);
+    return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +403,9 @@ int GKDistProcessor::createBand (Shape shape, double freq, double driveDb, doubl
     setParam (bandParamId (b, bpQ), (float) q);
     setParam (bandParamId (b, bpDrive), (float) driveDb);
     setParam (bandParamId (b, bpType), (float) (int) type);
+    // The dynamics detector bell starts on the band; it can then be moved independently.
+    setParam (bandParamId (b, bpDetFreq), (float) juce::jlimit (20.0, 20000.0, freq));
+    setParam (bandParamId (b, bpDetQ), (float) q);
     setParam (bandParamId (b, bpUsed), 1.0f);   // last: the band appears fully configured
     return b;
 }
