@@ -1,4 +1,5 @@
 # GKDIST
+<img width="1600" height="1040" alt="ui_large" src="https://github.com/user-attachments/assets/d5f482a4-1591-424d-b7a0-9cc55551cc7e" />
 
 A free, open-source 24-band multiband distortion plug-in for Windows (VST3,
 x64), by GK. Every band has its own effect chain - distortion (10 types),
